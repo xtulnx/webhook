@@ -5,6 +5,8 @@ Usage of webhook:
         path to the HTTPS certificate pem file (default "cert.pem")
   -cipher-suites string
         comma-separated list of supported TLS cipher suites
+  -command-timeout string
+        default timeout for hook command execution (for example 30s); 0 disables the timeout
   -debug
         show debug output
   -header value
@@ -23,6 +25,8 @@ Usage of webhook:
         list available TLS cipher suites
   -logfile string
         send log output to a file; implicitly enables verbose logging
+  -max-concurrency int
+        default maximum number of concurrent executions per hook; 0 disables the limit
   -nopanic
         do not panic if hooks cannot be loaded when webhook is not running in verbose mode
   -pidfile string
@@ -52,6 +56,8 @@ Usage of webhook:
 ```
 
 Use any of the above specified flags to override their default behavior.
+
+`-command-timeout` and `-max-concurrency` act as defaults for all hooks. Individual hooks can override them using the `command-timeout` and `max-concurrency` hook properties. Within a hook definition, `0` explicitly disables the inherited limit.
 
 # Live reloading hooks
 If you are running an OS that supports the HUP or USR1 signal, you can use it to trigger hooks reload from hooks file, without restarting the webhook instance.

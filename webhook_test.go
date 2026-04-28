@@ -495,6 +495,201 @@ func TestWebhookKeepFileEnvironment(t *testing.T) {
 		}
 	}
 }
+
+func TestWebhookCommandTimeout(t *testing.T) {
+	hookecho, cleanupHookecho := buildHookecho(t)
+	defer cleanupHookecho()
+
+	webhookBin, cleanupWebhook := buildWebhook(t)
+	defer cleanupWebhook()
+
+	tests := []struct {
+		name            string
+		id              string
+		extraArgs       []string
+		wantStatus      int
+		wantContains    []string
+		wantNotContains []string
+		minElapsed      time.Duration
+		maxElapsed      time.Duration
+	}{
+		{
+			name:            "global default timeout",
+			id:              "command-timeout-default",
+			extraArgs:       []string{"-command-timeout=100ms"},
+			wantStatus:      http.StatusInternalServerError,
+			wantContains:    nil,
+			wantNotContains: []string{"slept:"},
+			maxElapsed:      220 * time.Millisecond,
+		},
+		{
+			name:            "hook timeout",
+			id:              "command-timeout-hook",
+			wantStatus:      http.StatusInternalServerError,
+			wantContains:    nil,
+			wantNotContains: []string{"slept:"},
+			maxElapsed:      220 * time.Millisecond,
+		},
+		{
+			name:            "hook timeout override disabled",
+			id:              "command-timeout-unlimited",
+			extraArgs:       []string{"-command-timeout=100ms"},
+			wantStatus:      http.StatusOK,
+			wantContains:    []string{"arg: sleep=250ms", "slept: 250ms"},
+			wantNotContains: nil,
+			minElapsed:      220 * time.Millisecond,
+		},
+	}
+
+	for _, hookTmpl := range []string{"test/hooks.json.tmpl", "test/hooks.yaml.tmpl"} {
+		configPath, cleanupConfig := genConfig(t, hookecho, hookTmpl)
+		defer cleanupConfig()
+
+		for _, tt := range tests {
+			t.Run(tt.name+"@"+hookTmpl, func(t *testing.T) {
+				cmd, _, baseURL := startWebhookServer(t, webhookBin, configPath, tt.extraArgs...)
+				defer killAndWait(cmd)
+
+				start := time.Now()
+				status, body := doJSONHookRequest(t, baseURL, tt.id)
+				elapsed := time.Since(start)
+
+				if status != tt.wantStatus {
+					t.Fatalf("expected status %d, got %d: %s", tt.wantStatus, status, body)
+				}
+				for _, want := range tt.wantContains {
+					if !strings.Contains(body, want) {
+						t.Fatalf("response missing %q: %s", want, body)
+					}
+				}
+				for _, notWant := range tt.wantNotContains {
+					if strings.Contains(body, notWant) {
+						t.Fatalf("response unexpectedly contained %q: %s", notWant, body)
+					}
+				}
+				if tt.minElapsed > 0 && elapsed < tt.minElapsed {
+					t.Fatalf("request completed too quickly: got %v, want >= %v", elapsed, tt.minElapsed)
+				}
+				if tt.maxElapsed > 0 && elapsed > tt.maxElapsed {
+					t.Fatalf("request completed too slowly: got %v, want <= %v", elapsed, tt.maxElapsed)
+				}
+			})
+		}
+	}
+}
+
+func TestWebhookMaxConcurrency(t *testing.T) {
+	hookecho, cleanupHookecho := buildHookecho(t)
+	defer cleanupHookecho()
+
+	webhookBin, cleanupWebhook := buildWebhook(t)
+	defer cleanupWebhook()
+
+	limitedTests := []struct {
+		name        string
+		id          string
+		extraArgs   []string
+		limitNeedle string
+	}{
+		{
+			name:        "global default limit",
+			id:          "max-concurrency-default",
+			extraArgs:   []string{"-max-concurrency=1"},
+			limitNeedle: "Hook concurrency limit exceeded. Please try again later.",
+		},
+		{
+			name:        "hook limit",
+			id:          "max-concurrency-hook",
+			extraArgs:   nil,
+			limitNeedle: "Hook concurrency limit exceeded. Please try again later.",
+		},
+	}
+
+	for _, hookTmpl := range []string{"test/hooks.json.tmpl", "test/hooks.yaml.tmpl"} {
+		configPath, cleanupConfig := genConfig(t, hookecho, hookTmpl)
+		defer cleanupConfig()
+
+		for _, tt := range limitedTests {
+			t.Run(tt.name+"@"+hookTmpl, func(t *testing.T) {
+				cmd, logs, baseURL := startWebhookServer(t, webhookBin, configPath, tt.extraArgs...)
+				defer killAndWait(cmd)
+
+				type result struct {
+					status int
+					body   string
+					err    error
+				}
+
+				firstDone := make(chan result, 1)
+				go func() {
+					status, body, err := doJSONHookRequestResult(baseURL, tt.id)
+					firstDone <- result{status: status, body: body, err: err}
+				}()
+
+				waitForBufferContains(t, logs, "executing", time.Second)
+
+				secondStatus, secondBody := doJSONHookRequest(t, baseURL, tt.id)
+				firstResult := <-firstDone
+				if firstResult.err != nil {
+					t.Fatalf("first request failed: %v", firstResult.err)
+				}
+
+				if secondStatus != http.StatusServiceUnavailable {
+					t.Fatalf("expected second request to return 503, got %d: %s", secondStatus, secondBody)
+				}
+				if !strings.Contains(secondBody, tt.limitNeedle) {
+					t.Fatalf("expected second response to contain %q: %s", tt.limitNeedle, secondBody)
+				}
+				if firstResult.status != http.StatusOK {
+					t.Fatalf("expected first request to succeed, got %d: %s", firstResult.status, firstResult.body)
+				}
+				if !strings.Contains(firstResult.body, "slept: 250ms") {
+					t.Fatalf("expected first response to contain sleep output: %s", firstResult.body)
+				}
+			})
+		}
+
+		t.Run("hook limit override disabled@"+hookTmpl, func(t *testing.T) {
+			cmd, _, baseURL := startWebhookServer(t, webhookBin, configPath, "-max-concurrency=1")
+			defer killAndWait(cmd)
+
+			type result struct {
+				status int
+				body   string
+				err    error
+			}
+
+			results := make(chan result, 2)
+			start := time.Now()
+			for i := 0; i < 2; i++ {
+				go func() {
+					status, body, err := doJSONHookRequestResult(baseURL, "max-concurrency-unlimited")
+					results <- result{status: status, body: body, err: err}
+				}()
+			}
+
+			first := <-results
+			second := <-results
+			elapsed := time.Since(start)
+
+			for _, result := range []result{first, second} {
+				if result.err != nil {
+					t.Fatalf("request failed: %v", result.err)
+				}
+				if result.status != http.StatusOK {
+					t.Fatalf("expected request to succeed, got %d: %s", result.status, result.body)
+				}
+				if !strings.Contains(result.body, "slept: 250ms") {
+					t.Fatalf("expected response to contain sleep output: %s", result.body)
+				}
+			}
+			if elapsed > 450*time.Millisecond {
+				t.Fatalf("expected unlimited override to allow parallel execution, took %v", elapsed)
+			}
+		})
+	}
+}
+
 var hookHandlerTests = []struct {
 	desc        string
 	id          string

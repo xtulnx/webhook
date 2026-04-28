@@ -7,6 +7,8 @@ Hooks are defined as objects in the JSON or YAML hooks configuration file. Pleas
  * `id` - specifies the ID of your hook. This value is used to create the HTTP endpoint (http://yourserver:port/hooks/your-hook-id)
  * `execute-command` - specifies the command that should be executed when the hook is triggered
  * `command-working-directory` - specifies the working directory that will be used for the script when it's executed
+ * `command-timeout` - overrides the default command execution timeout for this hook. Accepts a Go duration string such as `30s`, `2m`, or `1h30m`. An empty value inherits the global `-command-timeout` flag. A value of `0` disables the timeout for this hook.
+ * `max-concurrency` - overrides the default maximum number of concurrent executions for this hook. An empty value inherits the global `-max-concurrency` flag. A value of `0` disables the limit for this hook.
  * `response-message` - specifies the string that will be returned to the hook initiator
  * `response-headers` - specifies the list of headers in format `{"name": "X-Example-Header", "value": "it works"}` that will be returned in HTTP response for the hook
  * `success-http-response-code` - specifies the HTTP status code to be returned upon success

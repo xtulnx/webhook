@@ -68,6 +68,10 @@ func cloneHook(src hook.Hook) hook.Hook {
 	if src.HTTPMethods != nil {
 		dst.HTTPMethods = append([]string(nil), src.HTTPMethods...)
 	}
+	if src.MaxConcurrency != nil {
+		value := *src.MaxConcurrency
+		dst.MaxConcurrency = &value
+	}
 
 	return dst
 }
@@ -250,6 +254,7 @@ func normalizeAdminHook(current hook.Hook) hook.Hook {
 	current.ID = strings.TrimSpace(current.ID)
 	current.ExecuteCommand = strings.TrimSpace(current.ExecuteCommand)
 	current.CommandWorkingDirectory = strings.TrimSpace(current.CommandWorkingDirectory)
+	current.CommandTimeout = strings.TrimSpace(current.CommandTimeout)
 	current.ResponseMessage = strings.TrimSpace(current.ResponseMessage)
 
 	if len(current.HTTPMethods) != 0 {
@@ -274,6 +279,9 @@ func upsertHookInFile(path, currentID string, updated hook.Hook) error {
 	updated = normalizeAdminHook(updated)
 	if updated.ID == "" {
 		return errors.New("hook id is required")
+	}
+	if err := updated.ValidateExecutionSettings(); err != nil {
+		return err
 	}
 
 	loadedHooksMu.Lock()

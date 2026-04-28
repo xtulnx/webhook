@@ -62,11 +62,13 @@
     hookId: byId("hookId"),
     executeCommand: byId("executeCommand"),
     commandWorkingDirectory: byId("commandWorkingDirectory"),
+    commandTimeout: byId("commandTimeout"),
     httpMethods: byId("httpMethods"),
     responseMessage: byId("responseMessage"),
     incomingPayloadContentType: byId("incomingPayloadContentType"),
     successHttpResponseCode: byId("successHttpResponseCode"),
     triggerRuleMismatchHttpResponseCode: byId("triggerRuleMismatchHttpResponseCode"),
+    maxConcurrency: byId("maxConcurrency"),
     captureCommandOutput: byId("captureCommandOutput"),
     captureCommandOutputOnError: byId("captureCommandOutputOnError"),
     triggerSignatureSoftFailures: byId("triggerSignatureSoftFailures"),
@@ -183,6 +185,7 @@
       id: "",
       "execute-command": "",
       "command-working-directory": "",
+      "command-timeout": "",
       "response-message": "",
       "http-methods": ["POST"]
     });
@@ -743,11 +746,13 @@
     setFormValue(els.hookId, hook.id);
     setFormValue(els.executeCommand, hook["execute-command"]);
     setFormValue(els.commandWorkingDirectory, hook["command-working-directory"]);
+    setFormValue(els.commandTimeout, hook["command-timeout"]);
     setFormValue(els.httpMethods, normalizeArray(hook["http-methods"]).join(", "));
     setFormValue(els.responseMessage, hook["response-message"]);
     setFormValue(els.incomingPayloadContentType, hook["incoming-payload-content-type"]);
     setFormValue(els.successHttpResponseCode, hook["success-http-response-code"] || "");
     setFormValue(els.triggerRuleMismatchHttpResponseCode, hook["trigger-rule-mismatch-http-response-code"] || "");
+    setFormValue(els.maxConcurrency, hook["max-concurrency"] === 0 ? "0" : (hook["max-concurrency"] || ""));
 
     els.captureCommandOutput.checked = !!hook["include-command-output-in-response"];
     els.captureCommandOutputOnError.checked = !!hook["include-command-output-in-response-on-error"];
@@ -988,6 +993,11 @@
       hook["command-working-directory"] = workingDirectory;
     }
 
+    var commandTimeout = inputValue(els.commandTimeout);
+    if (commandTimeout) {
+      hook["command-timeout"] = commandTimeout;
+    }
+
     var methods = splitCSV(els.httpMethods.value);
     if (methods.length) {
       hook["http-methods"] = methods;
@@ -1011,6 +1021,11 @@
     var mismatchCode = parseOptionalInt(els.triggerRuleMismatchHttpResponseCode.value, "Rule Mismatch HTTP Code", errors);
     if (mismatchCode !== null) {
       hook["trigger-rule-mismatch-http-response-code"] = mismatchCode;
+    }
+
+    var maxConcurrency = parseOptionalInt(els.maxConcurrency.value, "Max Concurrency", errors);
+    if (maxConcurrency !== null) {
+      hook["max-concurrency"] = maxConcurrency;
     }
 
     if (els.captureCommandOutput.checked) {
@@ -1172,11 +1187,13 @@
       els.hookId,
       els.executeCommand,
       els.commandWorkingDirectory,
+      els.commandTimeout,
       els.httpMethods,
       els.responseMessage,
       els.incomingPayloadContentType,
       els.successHttpResponseCode,
-      els.triggerRuleMismatchHttpResponseCode
+      els.triggerRuleMismatchHttpResponseCode,
+      els.maxConcurrency
     ].forEach(function (input) {
       input.addEventListener("input", updatePreview);
     });

@@ -96,6 +96,11 @@ func main() {
 
 	flag.Parse()
 
+	if err := initExecutionSettings(); err != nil {
+		fmt.Println("error:", err)
+		os.Exit(1)
+	}
+
 	if *justDisplayVersion {
 		fmt.Println("webhook version " + version)
 		os.Exit(0)
@@ -542,12 +547,14 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 			response, err := handleHook(matchedHook, req)
 
 			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				if matchedHook.CaptureCommandOutputOnError {
+				status, message := hookExecutionErrorStatus(err)
+				if matchedHook.CaptureCommandOutputOnError && response != "" {
+					w.WriteHeader(status)
 					fmt.Fprint(w, response)
 				} else {
 					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-					fmt.Fprint(w, "Error occurred while executing the hook's command. Please check your logs for more details.")
+					w.WriteHeader(status)
+					fmt.Fprint(w, message)
 				}
 			} else {
 				// Check if a success return code is configured for the hook
@@ -557,7 +564,13 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprint(w, response)
 			}
 		} else {
-			go handleHook(matchedHook, req)
+			if err := handleHookAsync(matchedHook, req); err != nil {
+				status, message := hookExecutionErrorStatus(err)
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(status)
+				fmt.Fprint(w, message)
+				return
+			}
 
 			// Check if a success return code is configured for the hook
 			if matchedHook.SuccessHttpResponseCode != 0 {
@@ -580,7 +593,9 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "Hook rules were not satisfied.")
 }
 
-func handleHook(h *hook.Hook, r *hook.Request) (string, error) {
+func executeHook(h *hook.Hook, r *hook.Request, waitForCommand bool, release func()) (string, error) {
+	defer release()
+
 	var errors []error
 
 	// check the command exists
@@ -604,7 +619,19 @@ func handleHook(h *hook.Hook, r *hook.Request) (string, error) {
 		return "", err
 	}
 
-	cmd := exec.Command(cmdPath)
+	ctx, cancel, useContext, err := hookExecutionContext(h, r, waitForCommand)
+	if err != nil {
+		log.Printf("[%s] error preparing command execution: %s", r.ID, err)
+		return "", err
+	}
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if useContext {
+		cmd = exec.CommandContext(ctx, cmdPath)
+	} else {
+		cmd = exec.Command(cmdPath)
+	}
 	cmd.Dir = h.CommandWorkingDirectory
 
 	cmd.Args, errors = h.ExtractCommandArguments(r)
