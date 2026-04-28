@@ -65,9 +65,13 @@ var (
 )
 
 func matchLoadedHook(id string) *hook.Hook {
-	for _, hooks := range loadedHooksFromFiles {
-		if hook := hooks.Match(id); hook != nil {
-			return hook
+	loadedHooksMu.RLock()
+	defer loadedHooksMu.RUnlock()
+
+	for _, hooksInFile := range loadedHooksFromFiles {
+		if matched := hooksInFile.Match(id); matched != nil {
+			cloned := cloneHook(*matched)
+			return &cloned
 		}
 	}
 
@@ -75,9 +79,12 @@ func matchLoadedHook(id string) *hook.Hook {
 }
 
 func lenLoadedHooks() int {
+	loadedHooksMu.RLock()
+	defer loadedHooksMu.RUnlock()
+
 	sum := 0
-	for _, hooks := range loadedHooksFromFiles {
-		sum += len(hooks)
+	for _, hooksInFile := range loadedHooksFromFiles {
+		sum += len(hooksInFile)
 	}
 
 	return sum
@@ -114,6 +121,11 @@ func main() {
 
 	if len(hooksFiles) == 0 {
 		hooksFiles = append(hooksFiles, "hooks.json")
+	}
+
+	if err := initAdmin(); err != nil {
+		fmt.Println("error:", err)
+		os.Exit(1)
 	}
 
 	// logQueue is a queue for log messages encountered during startup. We need
@@ -197,27 +209,34 @@ func main() {
 		if err != nil {
 			log.Printf("couldn't load hooks from file! %+v\n", err)
 		} else {
+			loadedHooksMu.Lock()
+			candidate := cloneLoadedHooksMapLocked()
+			candidate[hooksFilePath] = cloneHooks(newHooks)
+			if err := validateUniqueHookIDs(candidate); err != nil {
+				loadedHooksMu.Unlock()
+				log.Fatalf("error: %s\nplease check your hooks files for duplicate hook ids!\n", err)
+			}
+
 			log.Printf("found %d hook(s) in file\n", len(newHooks))
 
-			for _, hook := range newHooks {
-				if matchLoadedHook(hook.ID) != nil {
-					log.Fatalf("error: hook with the id %s has already been loaded!\nplease check your hooks file for duplicate hooks ids!\n", hook.ID)
-				}
-				log.Printf("\tloaded: %s\n", hook.ID)
+			for _, currentHook := range newHooks {
+				log.Printf("\tloaded: %s\n", currentHook.ID)
 			}
 
 			loadedHooksFromFiles[hooksFilePath] = newHooks
+			loadedHooksMu.Unlock()
 		}
 	}
 
+	loadedHooksMu.Lock()
 	newHooksFiles := hooksFiles[:0]
 	for _, filePath := range hooksFiles {
 		if _, ok := loadedHooksFromFiles[filePath]; ok {
 			newHooksFiles = append(newHooksFiles, filePath)
 		}
 	}
-
 	hooksFiles = newHooksFiles
+	loadedHooksMu.Unlock()
 
 	if !*verbose && !*noPanic && lenLoadedHooks() == 0 {
 		log.SetOutput(os.Stdout)
@@ -233,7 +252,7 @@ func main() {
 		}
 		defer watcher.Close()
 
-		for _, hooksFilePath := range hooksFiles {
+		for _, hooksFilePath := range hooksFilesSnapshot() {
 			// set up file watcher
 			log.Printf("setting up file watcher for %s\n", hooksFilePath)
 
@@ -273,6 +292,7 @@ func main() {
 		fmt.Fprint(w, "OK")
 	})
 
+	registerAdminRoutes(r)
 	r.HandleFunc(hooksURL, hookHandler)
 
 	// Create common HTTP server settings
@@ -284,6 +304,9 @@ func main() {
 	// Serve HTTP
 	if !*secure {
 		log.Printf("serving hooks on http://%s%s", addr, makeHumanPattern(hooksURLPrefix))
+		if *adminEnabled {
+			log.Printf("serving admin on http://%s%s", addr, currentAdminAuth.basePath)
+		}
 		log.Print(svr.Serve(ln))
 
 		return
@@ -299,6 +322,9 @@ func main() {
 	svr.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler)) // disable http/2
 
 	log.Printf("serving hooks on https://%s%s", addr, makeHumanPattern(hooksURLPrefix))
+	if *adminEnabled {
+		log.Printf("serving admin on https://%s%s", addr, currentAdminAuth.basePath)
+	}
 	log.Print(svr.ServeTLS(ln, *cert, *key))
 }
 
@@ -710,28 +736,21 @@ func reloadHooks(hooksFilePath string) {
 	if err != nil {
 		log.Printf("couldn't load hooks from file! %+v\n", err)
 	} else {
-		seenHooksIds := make(map[string]bool)
+		loadedHooksMu.Lock()
+		defer loadedHooksMu.Unlock()
+
+		candidate := cloneLoadedHooksMapLocked()
+		candidate[hooksFilePath] = cloneHooks(hooksInFile)
+		if err := validateUniqueHookIDs(candidate); err != nil {
+			log.Printf("error: %s", err)
+			log.Println("reverting hooks back to the previous configuration")
+			return
+		}
 
 		log.Printf("found %d hook(s) in file\n", len(hooksInFile))
 
-		for _, hook := range hooksInFile {
-			wasHookIDAlreadyLoaded := false
-
-			for _, loadedHook := range loadedHooksFromFiles[hooksFilePath] {
-				if loadedHook.ID == hook.ID {
-					wasHookIDAlreadyLoaded = true
-					break
-				}
-			}
-
-			if (matchLoadedHook(hook.ID) != nil && !wasHookIDAlreadyLoaded) || seenHooksIds[hook.ID] {
-				log.Printf("error: hook with the id %s has already been loaded!\nplease check your hooks file for duplicate hooks ids!", hook.ID)
-				log.Println("reverting hooks back to the previous configuration")
-				return
-			}
-
-			seenHooksIds[hook.ID] = true
-			log.Printf("\tloaded: %s\n", hook.ID)
+		for _, currentHook := range hooksInFile {
+			log.Printf("\tloaded: %s\n", currentHook.ID)
 		}
 
 		loadedHooksFromFiles[hooksFilePath] = hooksInFile
@@ -739,14 +758,16 @@ func reloadHooks(hooksFilePath string) {
 }
 
 func reloadAllHooks() {
-	for _, hooksFilePath := range hooksFiles {
+	for _, hooksFilePath := range hooksFilesSnapshot() {
 		reloadHooks(hooksFilePath)
 	}
 }
 
 func removeHooks(hooksFilePath string) {
-	for _, hook := range loadedHooksFromFiles[hooksFilePath] {
-		log.Printf("\tremoving: %s\n", hook.ID)
+	loadedHooksMu.Lock()
+
+	for _, currentHook := range loadedHooksFromFiles[hooksFilePath] {
+		log.Printf("\tremoving: %s\n", currentHook.ID)
 	}
 
 	newHooksFiles := hooksFiles[:0]
@@ -764,7 +785,14 @@ func removeHooks(hooksFilePath string) {
 
 	log.Printf("removed %d hook(s) that were loaded from file %s\n", removedHooksCount, hooksFilePath)
 
-	if !*verbose && !*noPanic && lenLoadedHooks() == 0 {
+	remainingHooksCount := 0
+	for _, hooksInFile := range loadedHooksFromFiles {
+		remainingHooksCount += len(hooksInFile)
+	}
+
+	loadedHooksMu.Unlock()
+
+	if !*verbose && !*noPanic && remainingHooksCount == 0 {
 		log.SetOutput(os.Stdout)
 		log.Fatalln("couldn't load any hooks from file!\naborting webhook execution since the -verbose flag is set to false.\nIf, for some reason, you want webhook to run without the hooks, either use -verbose flag, or -nopanic")
 	}
