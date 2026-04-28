@@ -532,6 +532,30 @@
     }
   },
   {
+    "id": "keep-file-environment",
+    "execute-command": "{{ .Hookecho }}",
+    "include-command-output-in-response": true,
+    "keep-file-environment": true,
+    "pass-arguments-to-command": [
+      {
+        "source": "string",
+        "name": "cat-env-file=HOOK_FILE_PKG"
+      }
+    ]
+  },
+  {
+    "id": "keep-file-environment-special-name",
+    "execute-command": "{{ .Hookecho }}",
+    "include-command-output-in-response": true,
+    "keep-file-environment": true,
+    "pass-arguments-to-command": [
+      {
+        "source": "string",
+        "name": "cat-env-file=HOOK_FILE_PKG-NAME"
+      }
+    ]
+  },
+  {
     "id": "empty-payload-signature",
     "execute-command": "{{ .Hookecho }}",
     "command-working-directory": "/",

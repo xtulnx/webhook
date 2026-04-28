@@ -23,7 +23,7 @@ Hooks are defined as objects in the JSON or YAML hooks configuration file. Pleas
  * `trigger-rule` - specifies the rule that will be evaluated in order to determine should the hook be triggered. Check [Hook rules page](Hook-Rules.md) to see the list of valid rules and their usage
  * `trigger-rule-mismatch-http-response-code` - specifies the HTTP status code to be returned when the trigger rule is not satisfied
  * `trigger-signature-soft-failures` - allow signature validation failures within Or rules; by default, signature failures are treated as errors.
-* `keep-file-environment` - Keep all submitted files. Sending `curl -d 'pkg=@res.tar.gz'` will retrieve the environment variable `HOOK_FILE_PKG`, which contains the file path, and `HOOK_FILENAME_PKG`, which contains the file name as `res.tar.gz`. If `keep-file-environment` is true, the file will be preserved after the hook is executed. By default, the corresponding file will be removed after the webhook exits.
+* `keep-file-environment` - expose uploaded multipart files to the executed command as temporary environment variables. For a multipart form field named `pkg`, webhook will provide `HOOK_FILE_PKG` with the temporary file path and `HOOK_FILENAME_PKG` with the original filename. These files exist only for the lifetime of the command execution and are removed afterwards. Multipart field names are uppercased and embedded into the environment variable name verbatim; if you plan to read them from a shell script, prefer field names that are safe shell variable suffixes such as letters, numbers, and underscores.
 
 ## Examples
 Check out [Hook examples page](Hook-Examples.md) for more complex examples of hooks.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -296,6 +297,120 @@ func killAndWait(cmd *exec.Cmd) {
 	cmd.Wait()
 }
 
+func startWebhookServer(t *testing.T, webhookBin, configPath string, extraArgs ...string) (*exec.Cmd, *buffer, string) {
+	t.Helper()
+
+	ip, port := serverAddress(t)
+	args := []string{
+		fmt.Sprintf("-hooks=%s", configPath),
+		fmt.Sprintf("-ip=%s", ip),
+		fmt.Sprintf("-port=%s", port),
+		"-debug",
+	}
+	args = append(args, extraArgs...)
+
+	logs := &buffer{}
+
+	cmd := exec.Command(webhookBin, args...)
+	cmd.Stderr = logs
+	cmd.Env = webhookEnv()
+	cmd.Args[0] = "webhook"
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start webhook: %s", err)
+	}
+
+	waitForServerReady(t, ip, port)
+
+	return cmd, logs, "http://" + net.JoinHostPort(ip, port)
+}
+
+func doJSONHookRequestResult(baseURL, hookID string) (int, string, error) {
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/hooks/"+hookID, bytes.NewBufferString(`{}`))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(`{}`))
+
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return 0, "", err
+	}
+
+	return res.StatusCode, string(body), nil
+}
+
+func doJSONHookRequest(t *testing.T, baseURL, hookID string) (int, string) {
+	t.Helper()
+
+	status, body, err := doJSONHookRequestResult(baseURL, hookID)
+	if err != nil {
+		t.Fatalf("failed to execute request: %v", err)
+	}
+
+	return status, body
+}
+
+func doMultipartHookRequest(t *testing.T, baseURL, hookID, fieldName, fileName string, data []byte) (int, string) {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	part, err := writer.CreateFormFile(fieldName, fileName)
+	if err != nil {
+		t.Fatalf("failed to create multipart form file: %v", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatalf("failed to write multipart payload: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close multipart writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/hooks/"+hookID, bytes.NewReader(body.Bytes()))
+	if err != nil {
+		t.Fatalf("failed to create multipart request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.ContentLength = int64(body.Len())
+
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("failed to execute multipart request: %v", err)
+	}
+	defer res.Body.Close()
+
+	respBody, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("failed to read multipart response body: %v", err)
+	}
+
+	return res.StatusCode, string(respBody)
+}
+
+func waitForBufferContains(t *testing.T, b *buffer, needle string, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(b.String(), needle) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("buffer did not contain %q within %v; got:\n%s", needle, timeout, b.String())
+}
+
 // webhookEnv returns the process environment without any existing hook
 // namespace variables.
 func webhookEnv() (env []string) {
@@ -308,6 +423,78 @@ func webhookEnv() (env []string) {
 	return
 }
 
+func TestWebhookKeepFileEnvironment(t *testing.T) {
+	hookecho, cleanupHookecho := buildHookecho(t)
+	defer cleanupHookecho()
+
+	webhookBin, cleanupWebhook := buildWebhook(t)
+	defer cleanupWebhook()
+
+	tests := []struct {
+		name        string
+		id          string
+		fieldName   string
+		fileName    string
+		fileContent string
+		fileEnv     string
+		nameEnv     string
+	}{
+		{
+			name:        "default field name",
+			id:          "keep-file-environment",
+			fieldName:   "pkg",
+			fileName:    "pkg.tar.gz",
+			fileContent: "payload-data",
+			fileEnv:     "HOOK_FILE_PKG",
+			nameEnv:     "HOOK_FILENAME_PKG",
+		},
+		{
+			name:        "special field name",
+			id:          "keep-file-environment-special-name",
+			fieldName:   "pkg-name",
+			fileName:    "pkg-name.txt",
+			fileContent: "special-data",
+			fileEnv:     "HOOK_FILE_PKG-NAME",
+			nameEnv:     "HOOK_FILENAME_PKG-NAME",
+		},
+	}
+
+	for _, hookTmpl := range []string{"test/hooks.json.tmpl", "test/hooks.yaml.tmpl"} {
+		configPath, cleanupConfig := genConfig(t, hookecho, hookTmpl)
+		defer cleanupConfig()
+
+		for _, tt := range tests {
+			t.Run(tt.name+"@"+hookTmpl, func(t *testing.T) {
+				cmd, _, baseURL := startWebhookServer(t, webhookBin, configPath)
+				defer killAndWait(cmd)
+
+				status, body := doMultipartHookRequest(t, baseURL, tt.id, tt.fieldName, tt.fileName, []byte(tt.fileContent))
+				if status != http.StatusOK {
+					t.Fatalf("expected status 200, got %d: %s", status, body)
+				}
+
+				if !strings.Contains(body, "arg: cat-env-file="+tt.fileEnv) {
+					t.Fatalf("response did not contain file env arg: %s", body)
+				}
+				if !strings.Contains(body, tt.nameEnv+"="+tt.fileName) {
+					t.Fatalf("response did not contain filename env %s=%s: %s", tt.nameEnv, tt.fileName, body)
+				}
+				if !strings.Contains(body, "file: "+tt.fileEnv+"="+tt.fileContent) {
+					t.Fatalf("response did not contain file contents for %s: %s", tt.fileEnv, body)
+				}
+
+				match := regexp.MustCompile(`(?m)^env: .*` + regexp.QuoteMeta(tt.fileEnv) + `=([^ ]+)`).FindStringSubmatch(body)
+				if len(match) != 2 {
+					t.Fatalf("could not extract temp file path from response: %s", body)
+				}
+
+				if _, err := os.Stat(match[1]); !os.IsNotExist(err) {
+					t.Fatalf("expected temp file %s to be removed after execution, stat err=%v", match[1], err)
+				}
+			})
+		}
+	}
+}
 var hookHandlerTests = []struct {
 	desc        string
 	id          string

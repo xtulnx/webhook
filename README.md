@@ -101,6 +101,8 @@ All files are ignored unless they match one of the following criteria:
 
 In either case, the given file part will be parsed as JSON and added to the `payload` map.
 
+If you want a hook command to inspect uploaded files directly, enable the `keep-file-environment` hook option. During command execution webhook will expose each uploaded file as `HOOK_FILE_<FIELD>` and the original filename as `HOOK_FILENAME_<FIELD>`, then remove the temporary file once the command exits. Because multipart field names are copied into the environment variable name after uppercasing, prefer names made of letters, numbers, and underscores if the command will read them from a shell script.
+
 ## Templates
 [webhook][w] can parse the hooks configuration file as a Go template when given the `-template` [CLI parameter](docs/Webhook-Parameters.md). See the [Templates page](docs/Templates.md) for more details on template usage.
 

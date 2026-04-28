@@ -488,6 +488,9 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					log.Printf("[%s] error parsing JSON payload file: %+v\n", req.ID, err)
 				}
+				if err := f.Close(); err != nil {
+					log.Printf("[%s] error closing multipart form file: %+v\n", req.ID, err)
+				}
 
 				if req.Payload == nil {
 					req.Payload = make(map[string]interface{})
@@ -704,9 +707,14 @@ func handleHook(h *hook.Hook, r *hook.Request) (string, error) {
 		if files[i].File != nil {
 			log.Printf("[%s] removing file %s\n", r.ID, files[i].File.Name())
 			err := os.Remove(files[i].File.Name())
-			if err != nil {
+			if err != nil && !os.IsNotExist(err) {
 				log.Printf("[%s] error removing file %s [%s]", r.ID, files[i].File.Name(), err)
 			}
+		}
+	}
+	if r.RawRequest != nil && r.RawRequest.MultipartForm != nil {
+		if err := r.RawRequest.MultipartForm.RemoveAll(); err != nil && !os.IsNotExist(err) {
+			log.Printf("[%s] error removing multipart form temp files [%s]", r.ID, err)
 		}
 	}
 
