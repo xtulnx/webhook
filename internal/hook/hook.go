@@ -995,7 +995,11 @@ const (
 // Evaluate MatchRule will return based on the type
 func (r MatchRule) Evaluate(req *Request) (bool, error) {
 	if r.Type == IPWhitelist {
-		return CheckIPWhitelist(req.RawRequest.RemoteAddr, r.IPRange)
+		addr := req.RealIP
+		if addr == "" {
+			addr = req.RawRequest.RemoteAddr
+		}
+		return CheckIPWhitelist(addr, r.IPRange)
 	}
 	if r.Type == ScalrSignature {
 		return CheckScalrSignature(req, r.Secret, true)

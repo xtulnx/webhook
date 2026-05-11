@@ -51,6 +51,8 @@ var (
 	maxMultipartMem    = flag.Int64("max-multipart-mem", 1<<20, "maximum memory in bytes for parsing multipart form data before disk caching")
 	httpMethods        = flag.String("http-methods", "", `set default allowed HTTP methods (ie. "POST"); separate methods with comma`)
 	pidPath            = flag.String("pidfile", "", "create PID file at the given path")
+	realIPHeader       = flag.String("real-ip-header", "", "header to extract real client IP from when behind a reverse proxy (e.g. X-Real-Ip)")
+	trustedProxies     = flag.String("trusted-proxies", "", "comma-separated list of trusted proxy IPs or CIDRs; required for real-ip-header to take effect")
 
 	responseHeaders hook.ResponseHeaders
 	hooksFiles      hook.HooksFiles
@@ -109,6 +111,8 @@ func main() {
 	}
 
 	flag.Parse()
+
+	initTrustedProxies()
 
 	if err := initExecutionSettings(); err != nil {
 		fmt.Println("error:", err)
@@ -358,9 +362,10 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 	req := &hook.Request{
 		ID:         middleware.GetReqID(r.Context()),
 		RawRequest: r,
+		RealIP:     resolveRealIP(r),
 	}
 
-	log.Printf("[%s] incoming HTTP %s request from %s\n", req.ID, r.Method, r.RemoteAddr)
+	log.Printf("[%s] incoming HTTP %s request from %s\n", req.ID, r.Method, req.RealIP)
 
 	// TODO: rename this to avoid confusion with Request.ID
 	id := mux.Vars(r)["id"]

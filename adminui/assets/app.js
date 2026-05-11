@@ -5,30 +5,30 @@
   var basePath = adminConfig.basePath || "";
 
   var sourceOptions = [
-    { value: "", label: "Select source" },
-    { value: "header", label: "Header" },
-    { value: "url", label: "URL Query" },
-    { value: "query", label: "Query Alias" },
-    { value: "payload", label: "Payload" },
-    { value: "raw-request-body", label: "Raw Request Body" },
-    { value: "request", label: "Request" },
-    { value: "string", label: "Static String" },
-    { value: "entire-payload", label: "Entire Payload" },
-    { value: "entire-query", label: "Entire Query" },
-    { value: "entire-headers", label: "Entire Headers" }
+    { value: "", label: "Select source / 选择来源" },
+    { value: "header", label: "Header / 请求头" },
+    { value: "url", label: "URL Query / URL查询参数" },
+    { value: "query", label: "Query Alias / 查询别名" },
+    { value: "payload", label: "Payload / 请求体" },
+    { value: "raw-request-body", label: "Raw Request Body / 原始请求体" },
+    { value: "request", label: "Request / 请求信息" },
+    { value: "string", label: "Static String / 静态字符串" },
+    { value: "entire-payload", label: "Entire Payload / 完整请求体" },
+    { value: "entire-query", label: "Entire Query / 完整查询参数" },
+    { value: "entire-headers", label: "Entire Headers / 完整请求头" }
   ];
 
   var matchTypeOptions = [
-    { value: "value", label: "Value Equals" },
-    { value: "regex", label: "Regex Match" },
-    { value: "payload-hmac-sha1", label: "Payload HMAC SHA1" },
-    { value: "payload-hmac-sha256", label: "Payload HMAC SHA256" },
-    { value: "payload-hmac-sha512", label: "Payload HMAC SHA512" },
-    { value: "payload-hash-sha1", label: "Payload Hash SHA1 (Deprecated)" },
-    { value: "payload-hash-sha256", label: "Payload Hash SHA256 (Deprecated)" },
-    { value: "payload-hash-sha512", label: "Payload Hash SHA512 (Deprecated)" },
-    { value: "ip-whitelist", label: "IP Whitelist" },
-    { value: "scalr-signature", label: "Scalr Signature" }
+    { value: "value", label: "Value Equals / 值匹配" },
+    { value: "regex", label: "Regex Match / 正则匹配" },
+    { value: "payload-hmac-sha1", label: "Payload HMAC SHA1 / 签名验证" },
+    { value: "payload-hmac-sha256", label: "Payload HMAC SHA256 / 签名验证" },
+    { value: "payload-hmac-sha512", label: "Payload HMAC SHA512 / 签名验证" },
+    { value: "payload-hash-sha1", label: "Payload Hash SHA1 (已弃用)" },
+    { value: "payload-hash-sha256", label: "Payload Hash SHA256 (已弃用)" },
+    { value: "payload-hash-sha512", label: "Payload Hash SHA512 (已弃用)" },
+    { value: "ip-whitelist", label: "IP Whitelist / IP白名单" },
+    { value: "scalr-signature", label: "Scalr Signature / Scalr签名" }
   ];
 
   var state = {
@@ -581,9 +581,13 @@
     }
 
     if (match.type === "ip-whitelist") {
-      fields.appendChild(createLabeledField("IP Range", createTextInput(match["ip-range"] || match.ipRange, "192.168.1.0/24 10.0.0.1", function (nextRange) {
+      fields.appendChild(createLabeledField("IP Range (IP白名单)", createTextInput(match["ip-range"] || match.ipRange, "192.168.1.0/24 10.0.0.1", function (nextRange) {
         ensureMatch(rule)["ip-range"] = nextRange;
       })));
+      var hint = document.createElement("div");
+      hint.className = "field-hint";
+      hint.textContent = "支持 CIDR 和单 IP，空格分隔多个。若经过反向代理，需配置 --trusted-proxies 和 --real-ip-header 才能获取真实客户端 IP。";
+      fields.appendChild(hint);
     }
 
     card.appendChild(fields);
