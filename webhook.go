@@ -99,6 +99,15 @@ func main() {
 	// register platform-specific flags
 	platformFlags()
 
+	// Extract -config / -c from os.Args before flag.Parse() sees it.
+	configFile = extractConfigFlag()
+	if configFile != "" {
+		if err := loadConfigFile(configFile); err != nil {
+			fmt.Println("error:", err)
+			os.Exit(1)
+		}
+	}
+
 	flag.Parse()
 
 	if err := initExecutionSettings(); err != nil {
