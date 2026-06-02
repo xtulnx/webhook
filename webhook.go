@@ -25,9 +25,7 @@ import (
 	"github.com/gorilla/mux"
 )
 
-const (
-	version = "2.8.3"
-)
+var version = "2.8.3"
 
 var (
 	ip                 = flag.String("ip", "0.0.0.0", "ip the webhook should serve hooks on")

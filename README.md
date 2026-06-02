@@ -46,7 +46,22 @@ If you are using Debian linux ("stretch" or later), you can install webhook usin
 If you are using FreeBSD, you can install webhook using `pkg install webhook`.
 
 ### Download prebuilt binaries
-Prebuilt binaries for different architectures are available at [GitHub Releases](https://github.com/adnanh/webhook/releases).
+Prebuilt binaries for different architectures are available at [GitHub Releases](https://github.com/xtulnx/webhook/releases).
+
+### One-line install or update
+The install scripts download the latest GitHub Release asset for your platform and replace the local binary.
+
+Linux, macOS, FreeBSD, or OpenBSD:
+```bash
+curl -fsSL https://raw.githubusercontent.com/xtulnx/webhook/master/scripts/install.sh | sh
+```
+
+Windows PowerShell:
+```powershell
+irm https://raw.githubusercontent.com/xtulnx/webhook/master/scripts/install.ps1 | iex
+```
+
+Set `WEBHOOK_VERSION` to install a specific release tag, `WEBHOOK_REPO` to install from a fork, or `WEBHOOK_INSTALL_DIR` to choose the destination directory.
 
 ## Configuration
 Next step is to define some hooks you want [webhook][w] to serve.
