@@ -384,6 +384,35 @@ git push origin v2.8.4
 
 也可以在 GitHub Actions 页面手动运行 `release` workflow，并填写版本号。
 
+### 版本维护建议
+
+建议按语义化版本维护 tag：
+
+- `v2.8.4`: 修复 bug、文档补充、兼容性小改动。
+- `v2.9.0`: 新增功能，但不破坏已有用法。
+- `v3.0.0`: 有破坏性变更，需要用户调整配置或调用方式。
+
+发布前建议创建一个专门的版本提交，把版本号、文档和发布相关改动放在一起：
+
+```bash
+git add webhook.go README.md README_CN.md .github scripts
+git commit -m "release: prepare v2.8.4"
+git tag v2.8.4
+git push origin master
+git push origin v2.8.4
+```
+
+Release Notes 由 GitHub 根据上一个 tag 到当前 tag 之间的 commit/PR 自动生成。为了让版本说明更清楚，commit 标题建议使用类似 Conventional Commits 的格式：
+
+```text
+feat: add admin hook editor
+fix: correct reverse proxy ip whitelist handling
+docs: add Chinese operations guide
+chore: update release workflow
+```
+
+如果通过 Pull Request 合并，建议给 PR 打 label，例如 `feature`、`fix`、`documentation`、`chore`。仓库中的 `.github/release.yml` 会按这些 label 对自动 Release Notes 分类。
+
 发布前建议确认：
 
 - `webhook.go` 中默认版本号已更新，或确认 workflow 注入的 tag 版本符合预期。
