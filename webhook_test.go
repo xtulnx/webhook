@@ -355,7 +355,7 @@ func startWebhookServer(t *testing.T, webhookBin, configPath string, extraArgs .
 		t.Fatalf("failed to start webhook: %s", err)
 	}
 
-	waitForServerReady(t, ip, port)
+	waitForServerReady(t, net.JoinHostPort(ip, port), &http.Client{})
 
 	return cmd, logs, "http://" + net.JoinHostPort(ip, port)
 }
