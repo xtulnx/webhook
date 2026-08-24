@@ -2,7 +2,7 @@
 # 用法: webhook -c /etc/webhook/webhook.yaml
 #
 # 支持所有命令行参数。
-# 列表类参数（hooks、header）使用 YAML 数组语法。
+# 列表类参数（hooks、hooks-dir、header）使用 YAML 数组语法。
 # 布尔类参数使用 true/false。
 # 命令行参数优先级高于本配置文件。
 
@@ -53,6 +53,10 @@ hooks:
   - /etc/webhook/admin.yaml
   - /etc/webhook/hooks.yaml
 
+# hook 定义目录，可重复配置。加载目录直属的 .json/.yaml/.yml 文件并自动监听
+# hooks-dir:
+#   - /etc/webhook/hooks.d
+
 # ============================================================
 # 运行行为
 # ============================================================
@@ -64,6 +68,9 @@ nopanic: true
 # 监视 hook 文件变化，自动热重载
 # 默认 false
 hotreload: true
+
+# 服务状态接口路径，默认可通过 GET /status 查看运行时间、已加载 hook 和最近加载时间
+# status-path: status
 
 # 将 hook 文件作为 Go template 解析
 # 默认 false

@@ -13,6 +13,8 @@ Usage of webhook:
         response header to return, specified in format name=value, use multiple times to set multiple headers
   -hooks value
         path to the json file containing defined hooks the webhook should serve, use multiple times to load from different files
+  -hooks-dir value
+        directory containing JSON or YAML hooks files; use multiple times to load and watch multiple directories
   -hotreload
         watch hooks file for changes and reload them automatically
   -http-methods string
@@ -43,6 +45,8 @@ Usage of webhook:
         set user ID after opening listening port; must be used with setgid
   -socket string
         path to a Unix socket (e.g. /tmp/webhook.sock) or Windows named pipe (e.g. \\.\pipe\webhook) to use instead of listening on an ip and port; if specified, the ip and port options are ignored
+  -status-path string
+        URL path for the service status endpoint (default "status")
   -template
         parse hooks file as a Go template
   -tls-min-version string
@@ -70,3 +74,9 @@ kill -USR1 webhookpid
 
 kill -HUP webhookpid
 ```
+
+`-hooks-dir` loads all direct child files ending in `.json`, `.yaml`, or `.yml` and automatically watches the directory, even when `-hotreload` is not set. New and removed files are reflected at runtime. A malformed update or a duplicate hook ID is rejected while the last valid configuration remains active. Other file types, subdirectories, and symbolic links that resolve outside the configured directory are ignored. Existing `-hooks` files continue to require `-hotreload` for automatic reloads.
+
+# Service status
+
+`GET /status` returns service uptime, the current hook and source-file counts, hook IDs, the most recent successful load time, and watcher state. Use `-status-path` to move the endpoint. The response intentionally omits absolute paths, command definitions, environment mappings, and load error details.

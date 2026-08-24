@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/adnanh/webhook/internal/hook"
 	"github.com/ghodss/yaml"
@@ -317,6 +318,7 @@ func upsertHookInFile(path, currentID string, updated hook.Hook) error {
 	}
 
 	loadedHooksFromFiles[path] = nextHooks
+	markHookLoadedLocked(path, time.Now())
 	return nil
 }
 
@@ -352,5 +354,6 @@ func deleteHookFromFile(path, id string) error {
 	}
 
 	loadedHooksFromFiles[path] = nextHooks
+	markHookLoadedLocked(path, time.Now())
 	return nil
 }

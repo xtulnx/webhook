@@ -14,13 +14,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/adnanh/webhook/internal/hook"
 	"github.com/adnanh/webhook/internal/middleware"
 	"github.com/adnanh/webhook/internal/pidfile"
 
-	"github.com/fsnotify/fsnotify"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/gorilla/mux"
 )
@@ -35,6 +33,7 @@ var (
 	debug              = flag.Bool("debug", false, "show debug output")
 	noPanic            = flag.Bool("nopanic", false, "do not panic if hooks cannot be loaded when webhook is not running in verbose mode")
 	hotReload          = flag.Bool("hotreload", false, "watch hooks file for changes and reload them automatically")
+	statusURLPrefix    = flag.String("status-path", "status", "URL path for the service status endpoint")
 	hooksURLPrefix     = flag.String("urlprefix", "hooks", "url prefix to use for served hooks (protocol://yourserver:port/PREFIX/:hook-id)")
 	secure             = flag.Bool("secure", false, "use HTTPS instead of HTTP")
 	asTemplate         = flag.Bool("template", false, "parse hooks file as a Go template")
@@ -52,12 +51,12 @@ var (
 	realIPHeader       = flag.String("real-ip-header", "", "header to extract real client IP from when behind a reverse proxy (e.g. X-Real-Ip)")
 	trustedProxies     = flag.String("trusted-proxies", "", "comma-separated list of trusted proxy IPs or CIDRs; required for real-ip-header to take effect")
 
-	responseHeaders hook.ResponseHeaders
-	hooksFiles      hook.HooksFiles
+	responseHeaders  hook.ResponseHeaders
+	hooksFiles       hook.HooksFiles
+	hooksDirectories hook.HooksFiles
 
 	loadedHooksFromFiles = make(map[string]hook.Hooks)
 
-	watcher *fsnotify.Watcher
 	signals chan os.Signal
 	pidFile *pidfile.PIDFile
 	setUID  = 0
@@ -94,6 +93,7 @@ func lenLoadedHooks() int {
 
 func main() {
 	flag.Var(&hooksFiles, "hooks", "path to the json file containing defined hooks the webhook should serve, use multiple times to load from different files")
+	flag.Var(&hooksDirectories, "hooks-dir", "directory containing JSON or YAML hooks files; use multiple times to load and watch multiple directories")
 	flag.Var(&responseHeaders, "header", "response header to return, specified in format name=value, use multiple times to set multiple headers")
 
 	// register platform-specific flags
@@ -140,11 +140,15 @@ func main() {
 		*verbose = true
 	}
 
-	if len(hooksFiles) == 0 {
+	if len(hooksFiles) == 0 && len(hooksDirectories) == 0 {
 		hooksFiles = append(hooksFiles, "hooks.json")
 	}
 
 	if err := initAdmin(); err != nil {
+		fmt.Println("error:", err)
+		os.Exit(1)
+	}
+	if err := initStatus(); err != nil {
 		fmt.Println("error:", err)
 		os.Exit(1)
 	}
@@ -227,71 +231,20 @@ func main() {
 	// set os signal watcher
 	setupSignals()
 
-	// load and parse hooks
-	for _, hooksFilePath := range hooksFiles {
-		log.Printf("attempting to load hooks from %s\n", hooksFilePath)
-
-		newHooks := hook.Hooks{}
-
-		err := newHooks.LoadFromFile(hooksFilePath, *asTemplate)
-
-		if err != nil {
-			log.Printf("couldn't load hooks from file! %+v\n", err)
-		} else {
-			loadedHooksMu.Lock()
-			candidate := cloneLoadedHooksMapLocked()
-			candidate[hooksFilePath] = cloneHooks(newHooks)
-			if err := validateUniqueHookIDs(candidate); err != nil {
-				loadedHooksMu.Unlock()
-				log.Fatalf("error: %s\nplease check your hooks files for duplicate hook ids!\n", err)
-			}
-
-			log.Printf("found %d hook(s) in file\n", len(newHooks))
-
-			for _, currentHook := range newHooks {
-				log.Printf("\tloaded: %s\n", currentHook.ID)
-			}
-
-			loadedHooksFromFiles[hooksFilePath] = newHooks
-			loadedHooksMu.Unlock()
-		}
+	if err := initializeHookSources(); err != nil {
+		log.Fatalf("error initializing hooks sources: %v", err)
 	}
 
-	loadedHooksMu.Lock()
-	newHooksFiles := hooksFiles[:0]
-	for _, filePath := range hooksFiles {
-		if _, ok := loadedHooksFromFiles[filePath]; ok {
-			newHooksFiles = append(newHooksFiles, filePath)
-		}
-	}
-	hooksFiles = newHooksFiles
-	loadedHooksMu.Unlock()
-
-	if !*verbose && !*noPanic && lenLoadedHooks() == 0 {
+	if !*verbose && !*noPanic && len(hooksDirectories) == 0 && lenLoadedHooks() == 0 {
 		log.SetOutput(os.Stdout)
 		log.Fatalln("couldn't load any hooks from file!\naborting webhook execution since the -verbose flag is set to false.\nIf, for some reason, you want webhook to start without the hooks, either use -verbose flag, or -nopanic")
 	}
 
-	if *hotReload {
-		var err error
-
-		watcher, err = fsnotify.NewWatcher()
-		if err != nil {
-			log.Fatal("error creating file watcher instance\n", err)
+	if *hotReload || len(hooksDirectories) != 0 {
+		if err := startHookWatcher(); err != nil {
+			log.Fatal("error creating hooks watcher: ", err)
 		}
 		defer watcher.Close()
-
-		for _, hooksFilePath := range hooksFilesSnapshot() {
-			// set up file watcher
-			log.Printf("setting up file watcher for %s\n", hooksFilePath)
-
-			err = watcher.Add(hooksFilePath)
-			if err != nil {
-				log.Print("error adding hooks file to the watcher\n", err)
-				return
-			}
-		}
-
 		go watchForFileChange()
 	}
 
@@ -322,6 +275,7 @@ func main() {
 	})
 
 	registerAdminRoutes(r)
+	registerStatusRoute(r)
 	r.HandleFunc(hooksURL, hookHandler)
 
 	// Create common HTTP server settings
@@ -781,113 +735,6 @@ func writeHttpResponseCode(w http.ResponseWriter, rid, hookId string, responseCo
 		w.WriteHeader(responseCode)
 	} else {
 		log.Printf("[%s] %s got matched, but the configured return code %d is unknown - defaulting to 200\n", rid, hookId, responseCode)
-	}
-}
-
-func reloadHooks(hooksFilePath string) {
-	hooksInFile := hook.Hooks{}
-
-	// parse and swap
-	log.Printf("attempting to reload hooks from %s\n", hooksFilePath)
-
-	err := hooksInFile.LoadFromFile(hooksFilePath, *asTemplate)
-
-	if err != nil {
-		log.Printf("couldn't load hooks from file! %+v\n", err)
-	} else {
-		loadedHooksMu.Lock()
-		defer loadedHooksMu.Unlock()
-
-		candidate := cloneLoadedHooksMapLocked()
-		candidate[hooksFilePath] = cloneHooks(hooksInFile)
-		if err := validateUniqueHookIDs(candidate); err != nil {
-			log.Printf("error: %s", err)
-			log.Println("reverting hooks back to the previous configuration")
-			return
-		}
-
-		log.Printf("found %d hook(s) in file\n", len(hooksInFile))
-
-		for _, currentHook := range hooksInFile {
-			log.Printf("\tloaded: %s\n", currentHook.ID)
-		}
-
-		loadedHooksFromFiles[hooksFilePath] = hooksInFile
-	}
-}
-
-func reloadAllHooks() {
-	for _, hooksFilePath := range hooksFilesSnapshot() {
-		reloadHooks(hooksFilePath)
-	}
-}
-
-func removeHooks(hooksFilePath string) {
-	loadedHooksMu.Lock()
-
-	for _, currentHook := range loadedHooksFromFiles[hooksFilePath] {
-		log.Printf("\tremoving: %s\n", currentHook.ID)
-	}
-
-	newHooksFiles := hooksFiles[:0]
-	for _, filePath := range hooksFiles {
-		if filePath != hooksFilePath {
-			newHooksFiles = append(newHooksFiles, filePath)
-		}
-	}
-
-	hooksFiles = newHooksFiles
-
-	removedHooksCount := len(loadedHooksFromFiles[hooksFilePath])
-
-	delete(loadedHooksFromFiles, hooksFilePath)
-
-	log.Printf("removed %d hook(s) that were loaded from file %s\n", removedHooksCount, hooksFilePath)
-
-	remainingHooksCount := 0
-	for _, hooksInFile := range loadedHooksFromFiles {
-		remainingHooksCount += len(hooksInFile)
-	}
-
-	loadedHooksMu.Unlock()
-
-	if !*verbose && !*noPanic && remainingHooksCount == 0 {
-		log.SetOutput(os.Stdout)
-		log.Fatalln("couldn't load any hooks from file!\naborting webhook execution since the -verbose flag is set to false.\nIf, for some reason, you want webhook to run without the hooks, either use -verbose flag, or -nopanic")
-	}
-}
-
-func watchForFileChange() {
-	for {
-		select {
-		case event := <-(*watcher).Events:
-			if event.Op&fsnotify.Write == fsnotify.Write {
-				log.Printf("hooks file %s modified\n", event.Name)
-				reloadHooks(event.Name)
-			} else if event.Op&fsnotify.Remove == fsnotify.Remove {
-				if _, err := os.Stat(event.Name); os.IsNotExist(err) {
-					log.Printf("hooks file %s removed, no longer watching this file for changes, removing hooks that were loaded from it\n", event.Name)
-					(*watcher).Remove(event.Name)
-					removeHooks(event.Name)
-				}
-			} else if event.Op&fsnotify.Rename == fsnotify.Rename {
-				time.Sleep(100 * time.Millisecond)
-				if _, err := os.Stat(event.Name); os.IsNotExist(err) {
-					// file was removed
-					log.Printf("hooks file %s removed, no longer watching this file for changes, and removing hooks that were loaded from it\n", event.Name)
-					(*watcher).Remove(event.Name)
-					removeHooks(event.Name)
-				} else {
-					// file was overwritten
-					log.Printf("hooks file %s overwritten\n", event.Name)
-					reloadHooks(event.Name)
-					(*watcher).Remove(event.Name)
-					(*watcher).Add(event.Name)
-				}
-			}
-		case err := <-(*watcher).Errors:
-			log.Println("watcher error:", err)
-		}
 	}
 }
 
