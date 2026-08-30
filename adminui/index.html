@@ -49,6 +49,23 @@
             <select id="fileSelect"></select>
           </div>
           <div id="fileMeta" class="meta-card">暂无可管理的 hooks 文件。</div>
+          <section class="update-panel" aria-labelledby="updateTitle">
+            <div class="toolbar-row">
+              <h3 id="updateTitle">程序版本</h3>
+              <button id="checkUpdateBtn" class="secondary" type="button">检查</button>
+            </div>
+            <dl class="version-list">
+              <div>
+                <dt>当前</dt>
+                <dd id="currentVersion">-</dd>
+              </div>
+              <div>
+                <dt>最新</dt>
+                <dd id="latestVersion">尚未检查</dd>
+              </div>
+            </dl>
+            <div id="updateStatus" class="status status-muted">尚未检查更新。</div>
+          </section>
           <div class="toolbar-row">
             <h3>Hooks</h3>
             <button id="newHookBtn" class="secondary" type="button">新建</button>

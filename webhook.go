@@ -23,7 +23,9 @@ import (
 	"github.com/gorilla/mux"
 )
 
-var version = "2.8.3"
+var (
+	version = "2.8.3"
+)
 
 var (
 	ip                 = flag.String("ip", "0.0.0.0", "ip the webhook should serve hooks on")
@@ -92,6 +94,10 @@ func lenLoadedHooks() int {
 }
 
 func main() {
+	if isUpdateCommand(os.Args) {
+		os.Exit(runUpdateCommand(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	flag.Var(&hooksFiles, "hooks", "path to the json file containing defined hooks the webhook should serve, use multiple times to load from different files")
 	flag.Var(&hooksDirectories, "hooks-dir", "directory containing JSON or YAML hooks files; use multiple times to load and watch multiple directories")
 	flag.Var(&responseHeaders, "header", "response header to return, specified in format name=value, use multiple times to set multiple headers")

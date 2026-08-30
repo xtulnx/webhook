@@ -72,6 +72,12 @@ hotreload: true
 # 服务状态接口路径，默认可通过 GET /status 查看运行时间、已加载 hook 和最近加载时间
 # status-path: status
 
+# Update checks use xtulnx/webhook by default. State files use the current
+# working directory unless update-state-dir is set.
+update-enabled: true
+update-repository: xtulnx/webhook
+# update-state-dir: /var/lib/webhook/update
+
 # 将 hook 文件作为 Go template 解析
 # 默认 false
 # template: false

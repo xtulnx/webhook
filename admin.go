@@ -119,6 +119,8 @@ func registerAdminRoutes(r *mux.Router) {
 	r.HandleFunc(basePath+"/api/auth/login", adminLoginHandler).Methods(http.MethodPost)
 	r.HandleFunc(basePath+"/api/auth/logout", adminLogoutHandler).Methods(http.MethodPost)
 	r.HandleFunc(basePath+"/api/config", adminRequireAuth(adminConfigHandler)).Methods(http.MethodGet)
+	r.HandleFunc(basePath+"/api/update/status", adminRequireAuth(adminUpdateStatusHandler)).Methods(http.MethodGet)
+	r.HandleFunc(basePath+"/api/update/check", adminRequireAuth(adminUpdateCheckHandler)).Methods(http.MethodPost)
 	r.HandleFunc(basePath+"/api/hooks", adminRequireAuth(adminCreateHookHandler)).Methods(http.MethodPost)
 	r.HandleFunc(basePath+"/api/hooks", adminRequireAuth(adminUpdateHookHandler)).Methods(http.MethodPut)
 	r.HandleFunc(basePath+"/api/hooks", adminRequireAuth(adminDeleteHookHandler)).Methods(http.MethodDelete)

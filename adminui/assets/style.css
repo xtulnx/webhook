@@ -246,6 +246,36 @@ button:disabled {
   color: var(--accent-strong);
 }
 
+.update-panel {
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.version-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.version-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.version-list dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.version-list dd {
+  margin: 0;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .status {
   margin-top: 14px;
   border: 1px solid rgba(31, 42, 36, 0.08);

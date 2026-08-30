@@ -2,7 +2,7 @@
 
 `webhook` 是一个用 Go 编写的轻量级 HTTP 回调服务。它可以把请求中的 header、query、payload、文件等数据映射到命令参数或环境变量，并在规则校验通过后执行指定命令。
 
-本仓库是从 `adnanh/webhook` fork 而来的增强版本，仓库地址为 [xtulnx/webhook](https://github.com/xtulnx/webhook)。除了上游原有能力外，本版本补充了 YAML 总配置、Admin 管理界面、命令超时、并发限制、反向代理真实 IP、PID 文件、一键安装脚本和 GitHub Release 编译发布流程。
+本仓库是从 `adnanh/webhook` fork 而来的增强版本，仓库地址为 [xtulnx/webhook](https://github.com/xtulnx/webhook)。除了上游原有能力外，本版本补充了 YAML 总配置、Admin 管理界面、命令超时、并发限制、反向代理真实 IP、PID 文件、一键安装脚本、GitHub Release 编译发布流程和安全更新检查机制。
 
 ![Admin 登录界面](images/img01.webp)
 
@@ -19,6 +19,7 @@
 - 支持 PID 文件、日志文件、热重载、自定义响应头、TLS、Unix socket。
 - 提供 Linux/macOS/BSD 的 shell 一键安装脚本和 Windows PowerShell 一键安装脚本。
 - 提供 GitHub Actions 自动编译、打包、校验和发布脚本。
+- 支持通过 CLI 检查、应用和回滚已签名的 GitHub Release 更新。
 
 ## 快速安装或更新
 
@@ -74,6 +75,28 @@ go build
 ```bash
 go test ./...
 ```
+
+## 更新 webhook 程序
+
+更新命令默认使用 `xtulnx/webhook`，不需要设置 `repository`。更新状态文件默认放在当前工作目录，因此 `state-dir` 不是必需项；如果该目录不可写，可以显式指定一个可写目录。
+
+```bash
+# 检查最新版本
+webhook update check
+
+# 应用更新（会要求确认；脚本或 CI 可加 --yes）
+webhook update apply --yes
+
+# 指定版本或状态目录
+webhook update apply --version v2.8.4 --state-dir /var/lib/webhook/update --yes
+
+# 使用上一次更新保存的备份回滚
+webhook update rollback --state-dir /var/lib/webhook/update
+```
+
+Release 清单优先使用内置 Ed25519 公钥验证。若部署环境尚未配置公钥，`check` 仍可工作，但 `apply` 默认拒绝未签名清单；仅在你明确接受 SHA256 校验而不做签名验证时使用 `--allow-unsigned`。
+
+更新会下载对应平台的 Release 归档，校验 SHA256 和签名，验证新二进制的版本号后再替换当前文件，并保留 `webhook.previous`。更新不会自动重启正在运行的服务；使用 systemd 时请在更新后执行 `systemctl restart webhook`。Admin 页面只提供认证后的版本检查和状态展示，程序替换仍通过 CLI 执行。
 
 生成本地 release 包：
 

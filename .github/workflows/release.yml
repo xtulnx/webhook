@@ -93,7 +93,9 @@ jobs:
           fi
 
           GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
-            go build -trimpath -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
+            go build -trimpath -ldflags="-s -w \
+              -X main.version=${{ steps.version.outputs.version }} \
+              -X main.updateManifestPublicKey=${{ vars.UPDATE_MANIFEST_PUBLIC_KEY }}" \
             -o "dist/$target/$binary" .
 
           cp LICENSE README.md "dist/$target/"
@@ -122,6 +124,60 @@ jobs:
           cd dist
           sha256sum *.tar.gz > checksums.txt
 
+      - name: Generate update manifest
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.version || github.ref_name }}"
+          if [[ "$tag" != v* ]]; then
+            tag="v$tag"
+          fi
+
+          assets='[]'
+          for archive in dist/webhook-*.tar.gz; do
+            name="$(basename "$archive")"
+            target="${name%.tar.gz}"
+            platform="${target#webhook-}"
+            goarch="${platform##*-}"
+            goos="${platform%-*}"
+            size="$(stat -c '%s' "$archive")"
+            sha256="$(sha256sum "$archive" | awk '{print $1}')"
+            asset="$(jq -n \
+              --arg os "$goos" \
+              --arg arch "$goarch" \
+              --arg name "$name" \
+              --argjson size "$size" \
+              --arg sha256 "$sha256" \
+              '{os:$os, arch:$arch, name:$name, size:$size, sha256:$sha256}')"
+            assets="$(jq --argjson asset "$asset" '. + [$asset]' <<<"$assets")"
+          done
+
+          jq -n \
+            --arg version "$tag" \
+            --arg publishedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg commit "${{ github.sha }}" \
+            --arg releaseURL "https://github.com/${{ github.repository }}/releases/tag/$tag" \
+            --argjson assets "$assets" \
+            '{schemaVersion:1, version:$version, publishedAt:$publishedAt, commit:$commit, releaseURL:$releaseURL, assets:$assets}' \
+            > dist/update-manifest.json
+
+      - name: Sign update manifest
+        shell: bash
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_PRIVATE_KEY" ]; then
+            echo "UPDATE_SIGNING_PRIVATE_KEY is not configured; publishing an unsigned manifest" >&2
+            : > dist/update-manifest.json.sig
+            exit 0
+          fi
+          printf '%s' "$UPDATE_SIGNING_PRIVATE_KEY" > signing-key.pem
+          trap 'rm -f signing-key.pem dist/update-manifest.sig.bin' EXIT
+          openssl pkeyutl -sign -rawin \
+            -inkey signing-key.pem \
+            -in dist/update-manifest.json \
+            -out dist/update-manifest.sig.bin
+          base64 -w 0 dist/update-manifest.sig.bin > dist/update-manifest.json.sig
+
       - name: Resolve tag
         id: tag
         shell: bash
@@ -137,4 +193,6 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/checksums.txt
+            dist/update-manifest.json
+            dist/update-manifest.json.sig
           generate_release_notes: true

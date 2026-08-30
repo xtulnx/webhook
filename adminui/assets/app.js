@@ -54,6 +54,10 @@
     fileMeta: byId("fileMeta"),
     hookList: byId("hookList"),
     refreshBtn: byId("refreshBtn"),
+    checkUpdateBtn: byId("checkUpdateBtn"),
+    currentVersion: byId("currentVersion"),
+    latestVersion: byId("latestVersion"),
+    updateStatus: byId("updateStatus"),
     newHookBtn: byId("newHookBtn"),
     logoutBtn: byId("logoutBtn"),
     readOnlyBanner: byId("readOnlyBanner"),
@@ -1118,6 +1122,47 @@
       showWorkspace();
       renderAll();
       setStatus(els.workspaceStatus, "配置已同步。", "success");
+      loadUpdateStatus().catch(function () {
+        renderUpdateStatus(null);
+      });
+    });
+  }
+
+  function renderUpdateStatus(data) {
+    var status = data || {};
+    els.currentVersion.textContent = status.currentVersion || "-";
+    els.latestVersion.textContent = status.latestVersion || "尚未检查";
+    els.checkUpdateBtn.disabled = status.enabled === false;
+
+    if (status.error) {
+      setStatus(els.updateStatus, status.error, "error");
+    } else if (status.available) {
+      setStatus(els.updateStatus, "发现新版本 " + status.latestVersion + "。请使用 CLI 完成更新。", "success");
+    } else if (status.checkedAt) {
+      setStatus(els.updateStatus, "当前已是最新版本。", "success");
+    } else if (status.enabled === false) {
+      setStatus(els.updateStatus, "更新检查已禁用。", "muted");
+    } else {
+      setStatus(els.updateStatus, "尚未检查更新。", "muted");
+    }
+  }
+
+  function loadUpdateStatus() {
+    return request("/api/update/status").then(function (data) {
+      renderUpdateStatus(data);
+    });
+  }
+
+  function checkForUpdate() {
+    els.checkUpdateBtn.disabled = true;
+    setStatus(els.updateStatus, "正在检查更新...", "muted");
+    return request("/api/update/check", { method: "POST" }).then(function (data) {
+      renderUpdateStatus(data);
+    }).catch(function (error) {
+      setStatus(els.updateStatus, error.message || "检查更新失败。", "error");
+      loadUpdateStatus().catch(function () {});
+    }).finally(function () {
+      els.checkUpdateBtn.disabled = false;
     });
   }
 
@@ -1250,6 +1295,8 @@
     });
   });
 
+  els.checkUpdateBtn.addEventListener("click", checkForUpdate);
+
   els.newHookBtn.addEventListener("click", function () {
     state.currentHookId = "";
     renderHookList();
@@ -1272,4 +1319,5 @@
   loadConfig().catch(function () {
     showLogin("请输入 TOTP 动态码。");
   });
+
 })();

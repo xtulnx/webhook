@@ -57,6 +57,12 @@ Usage of webhook:
         show verbose output
   -version
         display webhook version and quit
+  -update-enabled
+        enable update checks in the admin API (default true)
+  -update-repository string
+        GitHub repository used for updates (default "xtulnx/webhook")
+  -update-state-dir string
+        directory for update state; defaults to the current working directory
   -x-request-id
         use X-Request-Id header, if present, as request ID
   -x-request-id-limit int
