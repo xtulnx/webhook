@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -8,35 +9,79 @@ import (
 
 // parsedTrustedProxies holds the parsed CIDR networks from the --trusted-proxies flag.
 var parsedTrustedProxies []*net.IPNet
+var parsedAccessWhitelist []*net.IPNet
+var parsedAccessBlacklist []*net.IPNet
 
 // initTrustedProxies parses the --trusted-proxies flag value into CIDR networks.
 // Must be called after flag.Parse().
-func initTrustedProxies() {
-	if *trustedProxies == "" {
-		return
-	}
-
-	for _, entry := range strings.Split(*trustedProxies, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-
-		// If it's a plain IP without CIDR notation, add /32 (IPv4) or /128 (IPv6).
+func parseIPNetworks(value, name string) ([]*net.IPNet, error) {
+	var networks []*net.IPNet
+	for _, entry := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' }) {
 		if !strings.Contains(entry, "/") {
-			if strings.Contains(entry, ":") {
-				entry += "/128"
-			} else {
+			ip := net.ParseIP(entry)
+			if ip == nil {
+				return nil, fmt.Errorf("invalid %s entry %q", name, entry)
+			}
+			if ip.To4() != nil {
 				entry += "/32"
+			} else {
+				entry += "/128"
 			}
 		}
-
 		_, cidr, err := net.ParseCIDR(entry)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("invalid %s entry %q: %w", name, entry, err)
 		}
-		parsedTrustedProxies = append(parsedTrustedProxies, cidr)
+		networks = append(networks, cidr)
 	}
+	return networks, nil
+}
+
+func initTrustedProxies() error {
+	var err error
+	parsedTrustedProxies, err = parseIPNetworks(*trustedProxies, "trusted-proxies")
+	return err
+}
+
+func initAccessControl() error {
+	if strings.TrimSpace(*accessWhitelist) != "" && strings.TrimSpace(*accessBlacklist) != "" {
+		return fmt.Errorf("access-whitelist and access-blacklist cannot be used together")
+	}
+	var err error
+	parsedAccessWhitelist, err = parseIPNetworks(*accessWhitelist, "access-whitelist")
+	if err != nil {
+		return err
+	}
+	parsedAccessBlacklist, err = parseIPNetworks(*accessBlacklist, "access-blacklist")
+	return err
+}
+
+func accessControlMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := extractIP(resolveRealIP(r))
+		allowed := true
+		if len(parsedAccessWhitelist) > 0 {
+			allowed = ip != nil && containsIP(parsedAccessWhitelist, ip)
+		} else if len(parsedAccessBlacklist) > 0 {
+			allowed = ip != nil && !containsIP(parsedAccessBlacklist, ip)
+		}
+		if !allowed {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("Access denied."))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func containsIP(networks []*net.IPNet, ip net.IP) bool {
+	for _, network := range networks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // isTrustedProxy checks whether the given remote address (IP:port) belongs to

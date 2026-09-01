@@ -281,26 +281,37 @@ func CheckScalrSignature(r *Request, signingKey string, checkDate bool) (bool, e
 // CheckIPWhitelist makes sure the provided remote address (of the form IP:port) falls within the provided IP range
 // (in CIDR form or a single IP address).
 func CheckIPWhitelist(remoteAddr, ipRange string) (bool, error) {
-	// Extract IP address from remote address.
-
-	// IPv6 addresses will likely be surrounded by [].
-	ip := strings.Trim(remoteAddr, " []")
-
-	if i := strings.LastIndex(ip, ":"); i != -1 {
-		ip = ip[:i]
-		ip = strings.Trim(ip, " []")
+	addr := strings.TrimSpace(remoteAddr)
+	var ipText string
+	if strings.HasPrefix(addr, "[") {
+		if end := strings.IndexByte(addr, ']'); end >= 0 {
+			ipText = strings.TrimSpace(addr[1:end])
+			if host, _, err := net.SplitHostPort(ipText); err == nil {
+				ipText = host
+			}
+		}
 	}
-
-	parsedIP := net.ParseIP(ip)
+	if ipText == "" {
+		if host, _, err := net.SplitHostPort(addr); err == nil {
+			ipText = host
+		} else {
+			ipText = strings.Trim(addr, " []")
+		}
+	}
+	parsedIP := net.ParseIP(strings.TrimSpace(ipText))
 	if parsedIP == nil {
 		return false, fmt.Errorf("invalid IP address found in remote address '%s'", remoteAddr)
 	}
 
-	for _, r := range strings.Fields(ipRange) {
+	for _, r := range strings.FieldsFunc(ipRange, func(ch rune) bool { return ch == ',' || ch == ' ' || ch == '\t' || ch == '\n' }) {
 		// Extract IP range in CIDR form.  If a single IP address is provided, turn it into CIDR form.
 
 		if !strings.Contains(r, "/") {
-			r = r + "/32"
+			if net.ParseIP(r).To4() != nil {
+				r += "/32"
+			} else {
+				r += "/128"
+			}
 		}
 
 		_, cidr, err := net.ParseCIDR(r)

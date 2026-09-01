@@ -1,6 +1,10 @@
 # Webhook parameters
 ```
 Usage of webhook:
+  -access-blacklist string
+        comma-separated list of client IPs or CIDRs denied from accessing the service
+  -access-whitelist string
+        comma-separated list of client IPs or CIDRs allowed to access the service
   -cert string
         path to the HTTPS certificate pem file (default "cert.pem")
   -cipher-suites string
@@ -29,6 +33,8 @@ Usage of webhook:
         send log output to a file; implicitly enables verbose logging
   -max-concurrency int
         default maximum number of concurrent executions per hook; 0 disables the limit
+  -max-body-size int
+        maximum webhook request body size in bytes (0 disables the limit) (default 10485760)
   -max-multipart-mem int
         maximum memory in bytes for parsing multipart form data before disk caching (default 1048576)
   -nopanic
@@ -72,6 +78,12 @@ Usage of webhook:
 Use any of the above specified flags to override their default behavior.
 
 `-command-timeout` and `-max-concurrency` act as defaults for all hooks. Individual hooks can override them using the `command-timeout` and `max-concurrency` hook properties. Within a hook definition, `0` explicitly disables the inherited limit.
+
+## Access control and request limits
+
+`-access-whitelist` and `-access-blacklist` apply to every HTTP endpoint, including hooks, status, and the admin API. Values may be IPv4/IPv6 addresses or CIDR ranges, separated by commas. Configure only one; when a whitelist is configured, all other addresses are denied. IP matching uses the resolved client address, and only a request from a `-trusted-proxies` address may supply `-real-ip-header`.
+
+`-max-body-size` limits non-multipart and multipart request bodies before parsing. It defaults to 10 MiB; set it to `0` only when an unlimited body is explicitly required.
 
 # Live reloading hooks
 If you are running an OS that supports the HUP or USR1 signal, you can use it to trigger hooks reload from hooks file, without restarting the webhook instance.

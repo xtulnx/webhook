@@ -52,6 +52,9 @@ var (
 	pidPath            = flag.String("pidfile", "", "create PID file at the given path")
 	realIPHeader       = flag.String("real-ip-header", "", "header to extract real client IP from when behind a reverse proxy (e.g. X-Real-Ip)")
 	trustedProxies     = flag.String("trusted-proxies", "", "comma-separated list of trusted proxy IPs or CIDRs; required for real-ip-header to take effect")
+	accessWhitelist    = flag.String("access-whitelist", "", "comma-separated list of client IPs or CIDRs allowed to access the service")
+	accessBlacklist    = flag.String("access-blacklist", "", "comma-separated list of client IPs or CIDRs denied from accessing the service")
+	maxBodySize        = flag.Int64("max-body-size", 10<<20, "maximum webhook request body size in bytes (0 disables the limit)")
 
 	responseHeaders  hook.ResponseHeaders
 	hooksFiles       hook.HooksFiles
@@ -116,7 +119,18 @@ func main() {
 
 	flag.Parse()
 
-	initTrustedProxies()
+	if err := initTrustedProxies(); err != nil {
+		fmt.Println("error:", err)
+		os.Exit(1)
+	}
+	if err := initAccessControl(); err != nil {
+		fmt.Println("error:", err)
+		os.Exit(1)
+	}
+	if *maxBodySize < 0 {
+		fmt.Println("error: max-body-size must be zero or greater")
+		os.Exit(1)
+	}
 
 	if err := initExecutionSettings(); err != nil {
 		fmt.Println("error:", err)
@@ -190,12 +204,17 @@ func main() {
 	}
 
 	if *logPath != "" {
-		file, err := os.OpenFile(*logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666)
+		file, err := os.OpenFile(*logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			logQueue = append(logQueue, fmt.Sprintf("error opening log file %q: %v", *logPath, err))
 			// we'll bail out below
 		} else {
-			log.SetOutput(file)
+			if err := file.Chmod(0o600); err != nil {
+				logQueue = append(logQueue, fmt.Sprintf("error securing log file %q: %v", *logPath, err))
+				_ = file.Close()
+			} else {
+				log.SetOutput(file)
+			}
 		}
 	}
 
@@ -262,6 +281,7 @@ func main() {
 	))
 	r.Use(middleware.NewLogger())
 	r.Use(chimiddleware.Recoverer)
+	r.Use(accessControlMiddleware)
 
 	if *debug {
 		r.Use(middleware.Dumper(log.Writer()))
@@ -317,6 +337,10 @@ func main() {
 }
 
 func hookHandler(w http.ResponseWriter, r *http.Request) {
+	if *maxBodySize > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, *maxBodySize)
+	}
+
 	req := &hook.Request{
 		ID:         middleware.GetReqID(r.Context()),
 		RawRequest: r,
@@ -386,6 +410,11 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 		req.Body, err = ioutil.ReadAll(r.Body)
 		if err != nil {
 			log.Printf("[%s] error reading the request body: %+v\n", req.ID, err)
+			if *maxBodySize > 0 {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				fmt.Fprint(w, "Request body too large.")
+				return
+			}
 		}
 	}
 
@@ -416,6 +445,11 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			msg := fmt.Sprintf("[%s] error parsing multipart form: %+v\n", req.ID, err)
 			log.Println(msg)
+			if _, ok := err.(*http.MaxBytesError); ok {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				fmt.Fprint(w, "Request body too large.")
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprint(w, "Error occurred while parsing multipart form.")
 			return
