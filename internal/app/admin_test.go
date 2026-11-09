@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/adnanh/webhook/internal/hook"
 	"github.com/gorilla/mux"
+	"github.com/xtulnx/webhook/internal/hook"
 )
 
 const testAdminBase32Secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"

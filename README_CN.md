@@ -1,6 +1,6 @@
-# webhook 中文文档
+# webhook 中文文档（xtulnx 独立维护）
 
-中文说明已按功能拆分，入口为 [README](README.md) 和 [完整中文文档导航](docs/README.md)。
+项目身份、独立版本线及历史构建迁移见[项目说明](docs/Project-Origin.md)。中文说明已按功能拆分，入口为 [README](README.md) 和 [完整中文文档导航](docs/README.md)。
 
 - [第一次运行](docs/Quickstart.md)
 - [完整演示：请求、签名、文件、超时、并发、热加载、Admin、组网](examples/README.md)

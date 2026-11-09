@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Existing release tag, for example v2.8.4 (or 2.8.4)'
+        description: 'Existing project release tag, for example v1.0.0 (or 1.0.0)'
         required: true
         type: string
 
@@ -221,4 +221,10 @@ jobs:
             gh release create "$TAG" --verify-tag --draft --title "$TAG" --generate-notes
           fi
           gh release upload "$TAG" dist/*.* --clobber
-          gh release edit "$TAG" --draft=false --prerelease="$PRERELEASE"
+          # This project's v1 releases supersede inherited upstream v2 releases.
+          # Explicit latest selection must not depend on numeric tag ordering.
+          if [ "$PRERELEASE" = true ]; then
+            gh release edit "$TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$TAG" --draft=false --prerelease=false --latest
+          fi
