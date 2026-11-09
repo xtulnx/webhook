@@ -90,11 +90,13 @@ Release 目标按 `go tool dist list` 过滤不支持的平台组合；构建失
 
 ## 发布和签名
 
-`.github/workflows/build.yml` 在分支推送和 PR 时运行，也作为 Release 的可复用检查流程。Ubuntu 覆盖 Go 1.21 兼容下限，Linux / macOS / Windows 覆盖 stable；使用 go.sum 缓存依赖及构建结果，同一分支新任务取消过期 CI。检查包含 build、test、vet、离线安装器测试，以及 Linux 上的发布流程测试与演示 smoke。安装和发布流程测试也可本地执行：
+`.github/workflows/build.yml` 在分支推送和 PR 时运行，也作为 Release 的可复用检查流程。Ubuntu 覆盖 Go 1.21 兼容下限，Linux / macOS / Windows 覆盖 stable；使用 go.sum 缓存依赖及构建结果，同一分支新任务取消过期 CI。检查包含 build、test、vet、离线安装器测试，以及 Linux 上的发布流程测试与演示 smoke。Windows 安装测试分别运行 Windows PowerShell 5.1 和 PowerShell 7，校验与解压不依赖模块自动发现；失败场景同时验证错误原因与旧文件保留。安装和发布流程测试也可本地执行：
 
 ```sh
 python3 scripts/test-installers.py
 python3 scripts/test-release.py
+# 在 PowerShell 5.1 / 7 中验证实际 SHA256、文件句柄释放和 ZIP 函数：
+# ./scripts/test-install-powershell.ps1
 ```
 
 `.github/workflows/release.yml` 在推送 `v*` tag 或手动指定**已存在的 tag** 时发布。手动输入 `1.0.0` 会归一化为 `v1.0.0`，所有检查、构建和清单都使用该 tag 对应的同一提交，避免把运行工作流的分支误发为指定版本。文档中的 `vX.Y.Z` 均应替换为实际新版本。

@@ -29,7 +29,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 webhook -version
 ```
 
-ZIP 通过 PowerShell 原生解压，无需另外安装 tar；旧 Release 若只有 tar.gz，在系统已有 `tar.exe` 时自动回退安装。下载后可以先审阅脚本；执行策略仅对本次 PowerShell 进程生效。仓库中还提供 CMD/双击入口，需将 `install.cmd` 和 `install.ps1` 放在同一目录：
+SHA256 校验和 ZIP 解压直接使用 .NET，不依赖 `Get-FileHash` / `Expand-Archive` 的模块自动发现，无需另外安装 tar；旧 Release 若只有 tar.gz，在系统已有 `tar.exe` 时自动回退安装。下载后可以先审阅脚本；执行策略仅对本次 PowerShell 进程生效。仓库中还提供 CMD/双击入口，需将 `install.cmd` 和 `install.ps1` 放在同一目录：
 
 ```bat
 scripts\install.cmd
