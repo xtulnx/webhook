@@ -103,9 +103,9 @@ python3 scripts/test-release.py
 
 发布构建按 5 个系统分组复用工具链，生成 15 个平台的 tar.gz；Windows 另外生成 386 / amd64 / arm64 ZIP，Linux ARM 使用 GOARM=6（ARMv6 / ARMv7）。所有二进制禁用 CGO、使用 trimpath 并注入版本。Release 包含 checksums.txt、update-manifest.json、签名文件及三个安装入口 `install.sh` / `install.ps1` / `install.cmd`；内置更新清单继续引用 tar.gz，保持更新器兼容。
 
-签名使用 GitHub secret `UPDATE_SIGNING_PRIVATE_KEY`（PEM Ed25519 私钥），构建使用 repository variable `UPDATE_MANIFEST_PUBLIC_KEY`（Base64 编码的原始 32 字节公钥；格式以 `internal/update` 实现为准）。私钥留在 CI secret 或独立签名系统，不能提交仓库。公私钥均未设置时发布空签名文件，并输出警告；内置 apply 默认仍需受信签名，显式 `--allow-unsigned` 才可降级安装。只配置一项或公私钥不匹配会使发布失败。
+签名使用 GitHub secret `UPDATE_SIGNING_PRIVATE_KEY`（PEM Ed25519 私钥），构建使用 repository variable `UPDATE_MANIFEST_PUBLIC_KEY`（Base64 编码的原始 32 字节公钥；格式以 `internal/update` 实现为准）。私钥留在 CI secret 或独立签名系统，不能提交仓库。公私钥均未设置时发布仅含一个换行的未签名占位文件（避免 GitHub 拒绝零字节资产），并输出警告；内置 apply 默认仍需受信签名，显式 `--allow-unsigned` 才可降级安装。只配置一项或公私钥不匹配会使发布失败。
 
-发布先创建草稿，全部资产上传后才公开，避免安装脚本看到不完整的 latest；正式版本显式标记为 Latest，避免历史上游 2.x tag 影响独立 1.x 版本的默认安装；带 `-rc.1` 等后缀的版本自动标为 prerelease，不参与默认 latest 安装。失败的草稿可重新运行补齐，已公开的版本拒绝覆盖，应使用新 tag 修复。工作流默认仅有 contents:read，只有 publish 任务有 contents:write。
+发布前拒绝零字节资产，再创建草稿，全部资产上传后才公开，避免安装脚本看到不完整的 latest；正式版本显式标记为 Latest，避免历史上游 2.x tag 影响独立 1.x 版本的默认安装；带 `-rc.1` 等后缀的版本自动标为 prerelease，不参与默认 latest 安装。失败的草稿可重新运行补齐，已公开的版本拒绝覆盖，应使用新 tag 修复。工作流默认仅有 contents:read，只有 publish 任务有 contents:write。
 
 ```sh
 # 示例构建元数据注入；不要把私钥传给 -ldflags。

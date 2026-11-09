@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Test embedded release commands offline; never call the real GitHub CLI."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,11 @@ if args[:2] == ["release", "view"]:
     print("true" if state == "draft" else "false")
 if args[:2] == ["release", "upload"] and os.environ.get("RELEASE_TEST_UPLOAD_FAIL"):
     sys.exit(1)
+if args[:2] == ["release", "upload"]:
+    for name in args[3:]:
+        if not name.startswith("--") and Path(name).stat().st_size == 0:
+            print("HTTP 400: Bad Content-Length", file=sys.stderr)
+            sys.exit(1)
 ''')
         gh = tools / "gh"
         gh.write_text('#!/bin/sh\nexec "$RELEASE_TEST_PYTHON" "$RELEASE_TEST_STUB" "$@"\n')
@@ -78,6 +84,19 @@ if args[:2] == ["release", "upload"] and os.environ.get("RELEASE_TEST_UPLOAD_FAI
                 self.assert_success(self.run_step("Validate and normalize version", REQUESTED_VERSION=value))
                 values = dict(line.split("=", 1) for line in self.output.read_text().splitlines())
                 self.assertEqual(values, dict(tag=tag, version=tag[1:], prerelease=prerelease))
+
+    def test_unsigned_release_uploads_nonempty_placeholder_and_matching_checksum(self):
+        dist = self.work / "dist"
+        for name in ("webhook-windows-amd64.zip", "install.sh", "install.ps1", "install.cmd", "update-manifest.json"):
+            (dist / name).write_text("fixture")
+        self.assert_success(self.run_step("Sign update manifest", UPDATE_SIGNING_PRIVATE_KEY="", UPDATE_MANIFEST_PUBLIC_KEY=""))
+        signature = (dist / "update-manifest.json.sig").read_bytes()
+        self.assertTrue(signature, "GitHub rejects zero-byte release assets")
+        self.assertEqual(signature.strip(), b"", "Unsigned placeholder must not contain a signature")
+        checksum = hashlib.sha256(signature).hexdigest()
+        self.assertIn(f"{checksum}  update-manifest.json.sig", (dist / "checksums.txt").read_text())
+        self.assert_success(self.run_step("Publish complete GitHub release"))
+        self.assertEqual(self.gh_calls()[-1][1], "edit")
 
     def test_invalid_versions_rejected(self):
         for value in ("latest", "v1.0", "v1.0.0\nversion=bad", "$(exit 0)", "v1.0.0;exit 0"):
@@ -115,6 +134,13 @@ if args[:2] == ["release", "upload"] and os.environ.get("RELEASE_TEST_UPLOAD_FAI
         result = self.run_step("Publish complete GitHub release", RELEASE_TEST_UPLOAD_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual([call[1] for call in self.gh_calls()], ["view", "create", "upload"])
+
+    def test_empty_asset_is_rejected_before_creating_a_draft(self):
+        (self.work / "dist/update-manifest.json.sig").write_bytes(b"")
+        result = self.run_step("Publish complete GitHub release")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Release asset is empty", result.stdout)
+        self.assertFalse(self.calls.exists())
 
 
 if __name__ == "__main__":
