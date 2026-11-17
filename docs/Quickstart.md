@@ -1,6 +1,6 @@
 # 快速开始
 
-以下命令均从仓库根目录运行。需要 Go 和 curl；源码最低语言版本为 Go 1.21，`go.mod` 建议工具链为 1.22.0，实际使用建议选择仍受 Go 官方支持的稳定版本。
+以下命令均从仓库根目录运行。源码演示需要 Go 和 curl；仅使用配置模板只需对应平台的单个 webhook 程序。源码最低语言版本为 Go 1.21，`go.mod` 建议工具链为 1.22.0，实际使用建议选择仍受 Go 官方支持的稳定版本。
 
 命令帮助和参数说明使用中文，参数名称保持兼容。构建后可通过以下命令查看：
 
@@ -12,6 +12,22 @@
 ./build/webhook update apply --help
 ./build/webhook update rollback --help
 ```
+
+## 不记字段：从注释模板开始
+
+构建或安装程序后，可先生成自己的配置：
+
+```sh
+webhook config template list
+webhook config init --dir ./local
+webhook config template hook --output ./local/new-hook.yaml
+# 编辑 new-hook.yaml 中的命令、ID 与规则后：
+webhook hooks add --config ./local/webhook.yaml --file ./local/hooks.yaml --from ./local/new-hook.yaml --dry-run
+webhook hooks add --config ./local/webhook.yaml --file ./local/hooks.yaml --from ./local/new-hook.yaml
+webhook --config ./local/webhook.yaml
+```
+
+如果从源码构建且未添加 PATH，请将上述 webhook 换成 ./build/webhook（Windows 为 ./build/webhook.exe）。查看 Hub/Agent 等场景请用 `config template list`；完整注释默认使用 YAML，`--format json` 可生成无注释 JSON。模板使用边界见 [CLI 本地管理](CLI-Management.md)。
 
 ## 构建与启动
 

@@ -1,0 +1,21 @@
+# 本地上下文：hooks explain --config webhook.yaml --id example --context context.yaml
+# test 只有加 --execute 才执行命令；使用 CLI 当前账号，不发 HTTP、不模拟真实代理链路。
+# 默认辅助模式可免除缺失条件，assumptions 不等于真实通过；--strict 关闭免除。
+remote-ip: 127.0.0.1
+method: POST
+query:
+  - name: env
+    value: staging
+headers:
+  - name: X-Trace
+    value: local-test
+# body-file: ./request.json        # 原始字节；文件引用相对于本上下文文件目录。
+# content-type: application/json
+# payload-file: ./payload.json     # 已解析 JSON，与 body-file 二选一，不代造签名字节。
+# uploaded-files:
+#   - field: artifact
+#     path: ./package.zip          # 作为已上传文件输入，不实际上传。
+#     filename: release.zip
+#     content-type: application/zip
+# 同名文件沿用线上第一项语义；执行提供临时副本，不删除输入源文件。
+# 输入文件当前单份最多 10 MiB；本地测试不代表大文件真实上传链路验证。

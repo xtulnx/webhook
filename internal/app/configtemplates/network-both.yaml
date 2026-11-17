@@ -1,0 +1,28 @@
+# 级联：本机既是下游 Hub，也是上游的 Agent。需分别准备两个不同令牌。
+mode: both
+hub:
+  request_timeout: 60s
+  max_sessions: 128
+  nodes:
+    - id: edge
+      token_env: WEBHOOK_NODE_TOKEN # 下游 edge 与本机使用同一个节点令牌。
+      services: [webhook]
+      hook_prefix: /hooks
+  hook_routes:
+    - path: /deploy
+      hook: example
+      agents: [edge]
+      allow_ips: [127.0.0.1/32, "::1/128"]
+agent:
+  server: ws://127.0.0.1:9000 # 上游 Hub；本机级联模板服务监听 9001，避免连到自身。
+  id: relay                  # 上游 Hub 必须授权 relay，允许发布 webhook。
+  token_env: WEBHOOK_UPSTREAM_TOKEN # 上游单独令牌，不复用下游令牌。
+  max_connections: 64
+  with_webhook: false
+  webhook_only_via_hub: false # both 模式不能启用 only-via-hub。
+  allow_public_listen: false
+  services:
+    - name: webhook
+      relay_to: edge/webhook # 由本机 Hub 授权的下游服务；不能与 target 同时设置。
+# 上游公开路由应指向 relay 的 example；级联逐跳校验授权并限制跳数。
+# 不做跨机器配置同步、双端原子更新或网络配置的自动热重载。

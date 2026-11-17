@@ -107,6 +107,15 @@ func lenLoadedHooks() int {
 func Main(buildVersion, manifestPublicKey string) {
 	version = buildVersion
 	updateManifestPublicKey = manifestPublicKey
+	if len(os.Args) > 1 && os.Args[1] == "service" {
+		os.Exit(runServiceCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "config" {
+		os.Exit(runConfigCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "hooks" {
+		os.Exit(runHooksCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "agent" {
 		os.Exit(runAgentCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
@@ -332,6 +341,13 @@ func Main(buildVersion, manifestPublicKey string) {
 	if err := initializeHookSources(); err != nil {
 		log.Fatalf("error initializing hooks sources: %v", err)
 	}
+
+	stopControl, err := startRuntimeControl()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runtime control:", err)
+		os.Exit(1)
+	}
+	defer stopControl()
 
 	if !*verbose && !*noPanic && len(hooksDirectories) == 0 && lenLoadedHooks() == 0 && (networkConfig == nil || networkConfig.Agent != nil && networkConfig.Agent.WithWebhook) {
 		log.SetOutput(os.Stdout)
@@ -705,11 +721,15 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func executeHook(h *hook.Hook, r *hook.Request, waitForCommand bool, release func()) (string, error) {
+	return executeHookWithLogger(h, r, waitForCommand, release, log.Printf)
+}
+
+func executeHookWithLogger(h *hook.Hook, r *hook.Request, waitForCommand bool, release func(), printf func(string, ...interface{})) (string, error) {
 	defer release()
 	if r.RawRequest != nil && r.RawRequest.MultipartForm != nil {
 		defer func() {
 			if err := r.RawRequest.MultipartForm.RemoveAll(); err != nil && !os.IsNotExist(err) {
-				log.Printf("[%s] error removing multipart form temp files [%s]", r.ID, err)
+				printf("[%s] error removing multipart form temp files [%s]", r.ID, err)
 			}
 		}()
 	}
@@ -726,12 +746,12 @@ func executeHook(h *hook.Hook, r *hook.Request, waitForCommand bool, release fun
 
 	cmdPath, err := exec.LookPath(lookpath)
 	if err != nil {
-		log.Printf("[%s] error in %s", r.ID, err)
+		printf("[%s] error in %s", r.ID, err)
 
 		// check if parameters specified in execute-command by mistake
 		if strings.IndexByte(h.ExecuteCommand, ' ') != -1 {
 			s := strings.Fields(h.ExecuteCommand)[0]
-			log.Printf("[%s] use 'pass-arguments-to-command' to specify args for '%s'", r.ID, s)
+			printf("[%s] use 'pass-arguments-to-command' to specify args for '%s'", r.ID, s)
 		}
 
 		return "", err
@@ -739,7 +759,7 @@ func executeHook(h *hook.Hook, r *hook.Request, waitForCommand bool, release fun
 
 	ctx, cancel, useContext, err := hookExecutionContext(h, r, waitForCommand)
 	if err != nil {
-		log.Printf("[%s] error preparing command execution: %s", r.ID, err)
+		printf("[%s] error preparing command execution: %s", r.ID, err)
 		return "", err
 	}
 	defer cancel()
@@ -754,35 +774,35 @@ func executeHook(h *hook.Hook, r *hook.Request, waitForCommand bool, release fun
 
 	cmd.Args, errors = h.ExtractCommandArguments(r)
 	for _, err := range errors {
-		log.Printf("[%s] error extracting command arguments: %s\n", r.ID, err)
+		printf("[%s] error extracting command arguments: %s\n", r.ID, err)
 	}
 
 	var envs []string
 	envs, errors = h.ExtractCommandArgumentsForEnv(r)
 
 	for _, err := range errors {
-		log.Printf("[%s] error extracting command arguments for environment: %s\n", r.ID, err)
+		printf("[%s] error extracting command arguments for environment: %s\n", r.ID, err)
 	}
 
 	files, errors := h.ExtractCommandArgumentsForFile(r)
 
 	for _, err := range errors {
-		log.Printf("[%s] error extracting command arguments for file: %s\n", r.ID, err)
+		printf("[%s] error extracting command arguments for file: %s\n", r.ID, err)
 	}
 
 	for i := range files {
 		tmpfile, err := ioutil.TempFile(h.CommandWorkingDirectory, files[i].EnvName)
 		if err != nil {
-			log.Printf("[%s] error creating temp file [%s]", r.ID, err)
+			printf("[%s] error creating temp file [%s]", r.ID, err)
 			continue
 		}
-		log.Printf("[%s] writing env %s file %s", r.ID, files[i].EnvName, tmpfile.Name())
+		printf("[%s] writing env %s file %s", r.ID, files[i].EnvName, tmpfile.Name())
 		if _, err := tmpfile.Write(files[i].Data); err != nil {
-			log.Printf("[%s] error writing file %s [%s]", r.ID, tmpfile.Name(), err)
+			printf("[%s] error writing file %s [%s]", r.ID, tmpfile.Name(), err)
 			continue
 		}
 		if err := tmpfile.Close(); err != nil {
-			log.Printf("[%s] error closing file %s [%s]", r.ID, tmpfile.Name(), err)
+			printf("[%s] error closing file %s [%s]", r.ID, tmpfile.Name(), err)
 			continue
 		}
 
@@ -795,11 +815,11 @@ func executeHook(h *hook.Hook, r *hook.Request, waitForCommand bool, release fun
 			env_name := hook.EnvNamespace + "FILE_" + strings.ToUpper(k)
 			f, err := v[0].Open()
 			if err != nil {
-				log.Printf("[%s] error open form %s file [%s]", r.ID, k, err)
+				printf("[%s] error open form %s file [%s]", r.ID, k, err)
 				continue
 			}
 			if f1, ok := f.(*os.File); ok {
-				log.Printf("[%s] temporary file %s", r.ID, f1.Name())
+				printf("[%s] temporary file %s", r.ID, f1.Name())
 				_ = f1.Close()
 				files = append(files, hook.FileParameter{File: f1, EnvName: env_name})
 				envs = append(envs,
@@ -811,19 +831,19 @@ func executeHook(h *hook.Hook, r *hook.Request, waitForCommand bool, release fun
 			tmpfile, err := os.CreateTemp("", ".hook-"+r.ID+"-"+k+"-*")
 			if err != nil {
 				_ = f.Close()
-				log.Printf("[%s] error creating temp file [%s]", r.ID, err)
+				printf("[%s] error creating temp file [%s]", r.ID, err)
 				continue
 			}
-			log.Printf("[%s] writing env %s file %s", r.ID, env_name, tmpfile.Name())
+			printf("[%s] writing env %s file %s", r.ID, env_name, tmpfile.Name())
 			if _, err = io.Copy(tmpfile, f); err != nil {
-				log.Printf("[%s] error writing file %s [%s]", r.ID, tmpfile.Name(), err)
+				printf("[%s] error writing file %s [%s]", r.ID, tmpfile.Name(), err)
 				_ = f.Close()
 				_ = tmpfile.Close()
 				_ = os.Remove(tmpfile.Name())
 				continue
 			}
 			if err := tmpfile.Close(); err != nil {
-				log.Printf("[%s] error closing file %s [%s]", r.ID, tmpfile.Name(), err)
+				printf("[%s] error closing file %s [%s]", r.ID, tmpfile.Name(), err)
 				_ = os.Remove(tmpfile.Name())
 				continue
 			}
@@ -838,27 +858,27 @@ func executeHook(h *hook.Hook, r *hook.Request, waitForCommand bool, release fun
 
 	cmd.Env = append(os.Environ(), envs...)
 
-	log.Printf("[%s] executing %s (%s) with arguments %q and environment %s using %s as cwd\n", r.ID, h.ExecuteCommand, cmd.Path, cmd.Args, envs, cmd.Dir)
+	printf("[%s] executing %s (%s) with arguments %q and environment %s using %s as cwd\n", r.ID, h.ExecuteCommand, cmd.Path, cmd.Args, envs, cmd.Dir)
 
 	out, err := cmd.CombinedOutput()
 
-	log.Printf("[%s] command output: %s\n", r.ID, out)
+	printf("[%s] command output: %s\n", r.ID, out)
 
 	if err != nil {
-		log.Printf("[%s] error occurred: %+v\n", r.ID, err)
+		printf("[%s] error occurred: %+v\n", r.ID, err)
 	}
 
 	for i := range files {
 		if files[i].File != nil {
-			log.Printf("[%s] removing file %s\n", r.ID, files[i].File.Name())
+			printf("[%s] removing file %s\n", r.ID, files[i].File.Name())
 			err := os.Remove(files[i].File.Name())
 			if err != nil && !os.IsNotExist(err) {
-				log.Printf("[%s] error removing file %s [%s]", r.ID, files[i].File.Name(), err)
+				printf("[%s] error removing file %s [%s]", r.ID, files[i].File.Name(), err)
 			}
 		}
 	}
 
-	log.Printf("[%s] finished handling %s\n", r.ID, h.ID)
+	printf("[%s] finished handling %s\n", r.ID, h.ID)
 
 	return string(out), err
 }

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/ghodss/yaml"
+	yamlv2 "gopkg.in/yaml.v2"
 )
 
 // Constants used to specify the parameter source
@@ -825,6 +826,16 @@ type Hooks []Hook
 // can be either JSON or YAML.  The asTemplate parameter causes the file
 // contents to be parsed as a Go text/template prior to unmarshalling.
 func (h *Hooks) LoadFromFile(path string, asTemplate bool) error {
+	return h.loadFromFile(path, asTemplate, false)
+}
+
+// LoadFromFileStrict rejects unknown fields for offline configuration validation.
+// Normal server loading retains its existing compatibility behavior.
+func (h *Hooks) LoadFromFileStrict(path string, asTemplate bool) error {
+	return h.loadFromFile(path, asTemplate, true)
+}
+
+func (h *Hooks) loadFromFile(path string, asTemplate, strict bool) error {
 	if path == "" {
 		return nil
 	}
@@ -858,7 +869,28 @@ func (h *Hooks) LoadFromFile(path string, asTemplate bool) error {
 		file = buf.Bytes()
 	}
 
-	if err := yaml.Unmarshal(file, h); err != nil {
+	return h.loadBytes(file, strict)
+}
+
+// LoadFromBytesStrict validates a captured disk snapshot without rereading its path.
+func (h *Hooks) LoadFromBytesStrict(data []byte) error { return h.loadBytes(data, true) }
+
+func (h *Hooks) loadBytes(file []byte, strict bool) error {
+	if strict {
+		var syntax interface{}
+		if err := yamlv2.UnmarshalStrict(file, &syntax); err != nil {
+			return err
+		}
+		data, err := yaml.YAMLToJSON(file)
+		if err != nil {
+			return err
+		}
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(h); err != nil {
+			return err
+		}
+	} else if err := yaml.Unmarshal(file, h); err != nil {
 		return err
 	}
 

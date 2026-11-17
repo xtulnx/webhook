@@ -12,6 +12,7 @@
 | [触发规则](Hook-Rules.md) | AND/OR/NOT、值、正则、HMAC、IP、Scalr |
 | [配置模板](Templates.md) | 环境变量、文件密钥、systemd credentials |
 | [演示与场景](Hook-Examples.md) | 可运行演示及现有部署场景索引 |
+| [CLI 本地管理](CLI-Management.md) | 分类注释模板、场景初始化、增删改与刷新、test/explain、Linux 服务管理 |
 | [Admin 管理](Admin.md) | TOTP、会话、UI、配置修改与完整 API |
 | [内网组网](Network.md) | Hub/Agent、HTTP 路由、TCP、级联、临时文件共享 |
 | [部署与运维](Operations.md) | 安装、TLS、Nginx、systemd、更新、排错 |

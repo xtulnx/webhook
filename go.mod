@@ -12,6 +12,7 @@ require (
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/ghodss/yaml v1.0.0
 	github.com/go-chi/chi/v5 v5.0.12
+	github.com/godbus/dbus/v5 v5.0.4
 	github.com/gofrs/uuid/v5 v5.0.0
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.3

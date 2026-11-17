@@ -1,0 +1,26 @@
+# 独立组网文件：通过全局配置 network-config: ./network.yaml 引用。
+# 本文件不是 webhook --config 的顶层结构；完整服务配置请选择 hub 模板。
+mode: hub
+hub:
+  request_timeout: 60s
+  max_sessions: 128
+  nodes:
+    - id: edge
+      token_env: WEBHOOK_NODE_TOKEN  # 启动前注入至少 32 字符的独立高熵令牌；Agent 必须一致。
+      # token_file: ./secrets/edge.token  # 与 token_env/token 三选一；路径基于本文件目录。
+      # token: REPLACE_WITH_RANDOM_TOKEN # 只说明字段，不内置可用密钥。
+      services: [webhook]  # 允许发布的服务名称，不会自动替远端配置服务。
+      hook_prefix: /hooks
+      # allow: [other/ssh] # 本节点可以访问的节点/普通服务；webhook 不得放入 allow。
+    # 普通 TCP 转发示例：要使用时同时启用对应节点及其 Agent 配置。
+    # - id: other
+    #   token_env: WEBHOOK_OTHER_TOKEN
+    #   services: [ssh]
+  hook_routes:
+    - path: /deploy
+      hook: example       # 对应 edge 的 Hook ID，不是脚本路径。
+      agents: [edge]      # 多个 Agent 时按请求选择，不自动失败重试，避免重复执行。
+      allow_ips: [127.0.0.1/32, "::1/128"] # 按实际入口来源调整；与 deny_ips 二选一。
+      # deny_ips: [192.0.2.0/24]
+# Hub 做路由和预过滤，最终规则仍由 Agent 校验；信任 Hub，不提供端到端加密替代 TLS。
+# 修改网络配置/令牌目前需协调重启；Hook 热刷新不等于网络拓扑热更新。

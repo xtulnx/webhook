@@ -61,6 +61,8 @@ WEBHOOK_VERSION=v1.0.0 WEBHOOK_INSTALL_DIR="$HOME/.local/bin" sh install.sh
 
 ## systemd 常驻
 
+本工具已提供原生 `webhook service install/start/stop/restart/status/enable/disable/uninstall` 命令，代码与 Linux 构建已验证，尚待真实 systemd 环境验收；详见 [CLI 服务管理](CLI-Management.md#linux-systemd-服务管理)。以下手工 unit 示例仍可使用，CLI 不接管手工或已修改的单元。
+
 先准备服务用户、可读配置、可执行脚本和可写工作目录。示例路径按自己的机器调整：
 
 ```ini

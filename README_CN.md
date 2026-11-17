@@ -2,6 +2,7 @@
 
 项目来源与历史版本迁移见[项目说明](docs/Project-Origin.md)。中文说明已按功能拆分，入口为 [README](README.md) 和 [完整中文文档导航](docs/README.md)。
 
+- [分类注释模板、初始化与本地配置管理](docs/CLI-Management.md)
 - [第一次运行](docs/Quickstart.md)
 - [完整演示：请求、签名、文件、超时、并发、热加载、Admin、组网](examples/README.md)
 - [配置与加载](docs/Configuration.md)、[Hook 字段](docs/Hook-Definition.md)、[请求取值](docs/Referencing-Request-Values.md)、[规则](docs/Hook-Rules.md)

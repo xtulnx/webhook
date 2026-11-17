@@ -1,0 +1,69 @@
+# 单个 Hook 对象：编辑后用 hooks add --config webhook.yaml --file hooks.yaml --from hook.yaml。
+# 不能直接作为 -hooks 文件；整个数组文件请生成 hooks 模板。
+# 必改 execute-command：仅填写可执行文件路径，不把参数写进路径，也不执行 shell 展开。
+id: example
+execute-command: ./replace-with-your-command
+http-methods: [POST]
+# command-working-directory: /srv/app  # 相对命令路径会基于此目录查找；不要假设服务 PATH 等于终端。
+command-timeout: 30s
+max-concurrency: 1
+
+# 默认异步：HTTP 成功仅表示接受执行。改为 true 可同步等待并返回命令输出。
+include-command-output-in-response: false
+# include-command-output-in-response-on-error: true
+response-message: accepted
+success-http-response-code: 202
+trigger-rule-mismatch-http-response-code: 403
+# response-headers: [{name: X-Hook, value: example}]
+
+# 示例只允许本机来源；实际部署按业务修改，勿直接删除认证后暴露发布命令。
+trigger-rule:
+  match:
+    type: ip-whitelist
+    ip-range: 127.0.0.1/32,::1/128
+
+# 【固定参数】每项就是一个 argv，带空格仍是一个参数，不解析 shell 引号。
+# pass-arguments-to-command:
+#   - source: string
+#     name: --mode
+#   - source: string
+#     name: preview
+# 【动态参数】source 可选 payload、header、query/url、request、raw-request-body、
+# entire-payload、entire-query、entire-headers；payload 支持 user.name 等嵌套取值。
+#   - source: payload
+#     name: user.name
+#   - source: request
+#     name: remote-addr  # 也支持 method。
+# pass-environment-to-command:
+#   - source: query
+#     name: env
+#     envname: DEPLOY_ENV
+
+# 【文件与 JSON】pass-file 把取到的字段写入临时文件，再以环境变量传递文件路径。
+# pass-file-to-command:
+#   - source: payload
+#     name: artifact
+#     envname: ARTIFACT_PATH
+#     base64decode: true
+# keep-file-environment: true  # multipart 上传可产生 HOOK_FILE_<字段名> / HOOK_FILENAME_<字段名>。
+# incoming-payload-content-type: application/json  # 覆盖客户端 Content-Type；支持 JSON/XML/form/multipart。
+# parse-parameters-as-json:
+#   - source: payload
+#     name: metadata
+
+# 【组合规则】用下面整个 trigger-rule 替换上面的规则，不要保留两个同名键。
+# trigger-rule:
+#   and:
+#     - match:
+#         type: value        # 也支持 regex，并改用 regex: '正则表达式'。
+#         value: main
+#         parameter: {source: payload, name: ref}
+#     - match:
+#         type: payload-hmac-sha256  # 还支持 SHA-1/512；使用实际发送的原始 body 验签。
+#         secret: REPLACE_WITH_RANDOM_SECRET  # 这是占位符，不能作为真实密钥使用。
+#         parameter: {source: header, name: X-Hub-Signature-256}
+# and 可换为 or；取反使用 not: {match: ...}。Scalr 签名见 docs/Hook-Rules.md。
+# trigger-signature-soft-failures: false  # 不建议随意放宽签名失败；本地 Scalr 预演暂不支持。
+# 用 template 模式时可将 secret 设为 '{{ getenv "WEBHOOK_HMAC_SECRET" }}'；普通模式不会展开。
+# hooks validate 做结构校验；explain 辅助模式可免除缺失条件，--strict 关闭免除。
+# 超时通常只取消直接子进程，不保证清理其全部派生进程；不提供持久队列或自动重试。

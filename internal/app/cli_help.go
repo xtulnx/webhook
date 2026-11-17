@@ -19,11 +19,14 @@ func writeMainHelp() {
 	fmt.Fprintln(output, "  webhook [参数]                  启动 Webhook 服务")
 	fmt.Fprintln(output, "  webhook agent [参数]            临时加入 Hub")
 	fmt.Fprintln(output, "  webhook update <子命令> [参数]   检查更新、应用更新或回滚")
+	fmt.Fprintln(output, "  webhook hooks <子命令> [参数]    查询、增删改、刷新、校验与本地测试 Hook")
+	fmt.Fprintln(output, "  webhook config <子命令> [参数]   初始化场景配置、生成分类模板")
+	fmt.Fprintln(output, "  webhook service <子命令> [参数]  原生系统服务管理")
 	fmt.Fprintln(output, "\n配置文件：")
 	fmt.Fprintln(output, "  -c, -config, --config 路径\n    \t读取 YAML 总配置，命令行参数优先于配置文件")
 	fmt.Fprintln(output, "\n参数：")
 	writeFlagHelp(flag.CommandLine)
-	fmt.Fprintln(output, "\n使用 webhook agent --help 或 webhook update --help 查看子命令帮助。")
+	fmt.Fprintln(output, "\n使用 webhook config --help、webhook hooks --help、webhook service --help、webhook agent --help 或 webhook update --help 查看子命令帮助。")
 }
 
 func writeFlagHelp(flags *flag.FlagSet) {

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
@@ -176,48 +175,14 @@ func writeHooksFile(path string, hooksInFile hook.Hooks) error {
 		return err
 	}
 
-	dir := filepath.Dir(path)
-	if dir == "" {
-		dir = "."
-	}
-
-	tmp, err := ioutil.TempFile(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
+	info, err := os.Lstat(path)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	mode := os.FileMode(0o644)
-	if stat, statErr := os.Stat(path); statErr == nil {
-		mode = stat.Mode()
+	if err == nil && !info.Mode().IsRegular() {
+		return errors.New("Hook target must be a regular file")
 	}
-
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return err
-	}
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-
-	renameErr := os.Rename(tmpName, path)
-	if renameErr == nil {
-		return nil
-	}
-
-	if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
-		return renameErr
-	}
-
-	return os.Rename(tmpName, path)
+	return writeHookReplacement(path, data, info)
 }
 
 func validateUniqueHookIDs(candidate map[string]hook.Hooks) error {
@@ -285,75 +250,113 @@ func upsertHookInFile(path, currentID string, updated hook.Hook) error {
 		return err
 	}
 
-	loadedHooksMu.Lock()
-	defer loadedHooksMu.Unlock()
-
-	existingHooks, ok := loadedHooksFromFiles[path]
-	if !ok {
-		return fmt.Errorf("%w: %s", errUnknownHookFile, path)
-	}
-
-	nextHooks := cloneHooks(existingHooks)
-	if currentID == "" {
-		if hookIndexByID(nextHooks, updated.ID) != -1 {
-			return fmt.Errorf("hook with ID %s is already defined", updated.ID)
+	return mutateAdminHookFile(path, func(existing hook.Hooks) (hook.Hooks, error) {
+		next := cloneHooks(existing)
+		if currentID == "" {
+			if hookIndexByID(next, updated.ID) >= 0 {
+				return nil, fmt.Errorf("hook with ID %s is already defined", updated.ID)
+			}
+			return append(next, updated), nil
 		}
-		nextHooks = append(nextHooks, updated)
-	} else {
-		index := hookIndexByID(nextHooks, currentID)
-		if index == -1 {
-			return fmt.Errorf("hook with ID %s was not found in %s", currentID, path)
+		index := hookIndexByID(next, currentID)
+		if index < 0 {
+			return nil, fmt.Errorf("hook with ID %s was not found in %s", currentID, path)
 		}
-		nextHooks[index] = updated
-	}
-
-	candidate := cloneLoadedHooksMapLocked()
-	candidate[path] = nextHooks
-
-	if err := validateUniqueHookIDs(candidate); err != nil {
-		return err
-	}
-	if err := writeHooksFile(path, nextHooks); err != nil {
-		return err
-	}
-
-	loadedHooksFromFiles[path] = nextHooks
-	markHookLoadedLocked(path, time.Now())
-	return nil
+		next[index] = updated
+		return next, nil
+	})
 }
 
 func deleteHookFromFile(path, id string) error {
 	if adminWritesDisabled() {
 		return errAdminReadOnly
 	}
+	return mutateAdminHookFile(path, func(existing hook.Hooks) (hook.Hooks, error) {
+		index := hookIndexByID(existing, id)
+		if index < 0 {
+			return nil, fmt.Errorf("hook with ID %s was not found in %s", id, path)
+		}
+		next := cloneHooks(existing)
+		next = append(next[:index], next[index+1:]...)
+		return next, nil
+	})
+}
 
-	loadedHooksMu.Lock()
-	defer loadedHooksMu.Unlock()
-
-	existingHooks, ok := loadedHooksFromFiles[path]
-	if !ok {
+func mutateAdminHookFile(path string, mutate func(hook.Hooks) (hook.Hooks, error)) error {
+	loadedHooksMu.RLock()
+	paths := make([]string, 0, len(loadedHooksFromFiles))
+	for p := range loadedHooksFromFiles {
+		paths = append(paths, p)
+	}
+	_, known := loadedHooksFromFiles[path]
+	loadedHooksMu.RUnlock()
+	if !known {
 		return fmt.Errorf("%w: %s", errUnknownHookFile, path)
 	}
-
-	index := hookIndexByID(existingHooks, id)
-	if index == -1 {
-		return fmt.Errorf("hook with ID %s was not found in %s", id, path)
+	lockPaths := append([]string(nil), paths...)
+	for _, dir := range hooksDirectories {
+		lockPaths = append(lockPaths, filepath.Join(dir, ".sources"))
 	}
-
-	nextHooks := cloneHooks(existingHooks[:index])
-	nextHooks = append(nextHooks, cloneHooks(existingHooks[index+1:])...)
-
-	candidate := cloneLoadedHooksMapLocked()
-	candidate[path] = nextHooks
-
-	if err := validateUniqueHookIDs(candidate); err != nil {
+	unlock, err := lockHookDirectories(lockPaths)
+	if err != nil {
 		return err
 	}
-	if err := writeHooksFile(path, nextHooks); err != nil {
+	defer unlock()
+	hookApplyMu.Lock()
+	defer hookApplyMu.Unlock()
+	loadedHooksMu.Lock()
+	defer loadedHooksMu.Unlock()
+	if len(paths) != len(loadedHooksFromFiles) {
+		return errors.New("Hook sources changed concurrently")
+	}
+	for _, p := range paths {
+		if _, ok := loadedHooksFromFiles[p]; !ok {
+			return errors.New("Hook sources changed concurrently")
+		}
+	}
+	sourceSet := map[string]bool{}
+	for _, p := range paths {
+		sourceSet[p] = true
+	}
+	for _, dir := range hooksDirectories {
+		found, e := directoryHooksFiles(dir)
+		if e != nil {
+			return e
+		}
+		for _, p := range found {
+			if !sourceSet[p] {
+				paths = append(paths, p)
+				sourceSet[p] = true
+			}
+		}
+	}
+	disk := make([]hookDiskSnapshot, 0, len(paths))
+	candidate := map[string]hook.Hooks{}
+	for _, p := range paths {
+		s, e := readHookSnapshot(p)
+		if e != nil {
+			return e
+		}
+		disk = append(disk, s)
+		candidate[p] = s.hooks
+	}
+	next, err := mutate(candidate[path])
+	if err != nil {
 		return err
 	}
-
-	loadedHooksFromFiles[path] = nextHooks
+	candidate[path] = next
+	if err = validateUniqueHookIDs(candidate); err != nil {
+		return err
+	}
+	running := cloneLoadedHooksMapLocked()
+	running[path] = next
+	if err = validateUniqueHookIDs(running); err != nil {
+		return err
+	}
+	if _, err = commitHookSnapshot(disk, path, next); err != nil {
+		return err
+	}
+	loadedHooksFromFiles[path] = next
 	markHookLoadedLocked(path, time.Now())
 	return nil
 }

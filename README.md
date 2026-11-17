@@ -26,6 +26,21 @@ Windows PowerShell：
 
 重复执行即可更新，脚本自动识别平台并校验 SHA256。Windows 提供 [CMD 入口](scripts/install.cmd)；自定义目录、指定版本和服务重启说明见[安装文档](docs/Operations.md#安装和构建)。
 
+## 生成自己的配置
+
+使用内置分类模板，无需记忆字段或安装额外脚本。YAML 带中文注释，JSON 不含注释；生成文件默认拒绝覆盖。
+
+```sh
+webhook config template list
+webhook config init --dir ./local
+webhook config template hook --output ./local/new-hook.yaml
+# 按注释编辑新 Hook 的 ID、命令和规则，再通过 hooks add --from 添加。
+webhook config template hub --output hub.yaml
+webhook config template agent --format json --output agent.json
+```
+
+全局、Hook 数组/单对象、Hub/Agent/级联、Admin、TLS、本地测试上下文均有模板。完整用途及“查看 → 填写 → 校验 → 应用”流程见 [CLI 配置管理](docs/CLI-Management.md)。Hub/Agent 启动前必须配置真实地址和独立令牌；生成模板不会自动启动服务。
+
 ## 快速体验
 
 从仓库根目录运行，需要 Go 和 curl：

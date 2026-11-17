@@ -1,0 +1,21 @@
+# 独立组网文件：全局配置通过 network-config 引用；完整服务请选择 agent 模板。
+mode: agent
+agent:
+  server: ws://127.0.0.1:9000 # 本机联调；远程必须改为 wss://真实Hub地址（保留代理子路径）。
+  id: edge                  # 需与 Hub 已授权节点 ID 一致，不会自动注册未知节点。
+  token_env: WEBHOOK_NODE_TOKEN
+  # token_file: ./secrets/edge.token # 与 token_env/token 三选一，路径基于所属配置目录。
+  # ca_file: ./certs/hub-ca.pem      # 私有 CA；不跳过 TLS 校验。
+  with_webhook: true
+  webhook_only_via_hub: true # Hook 只通过 Hub 进入，不开放本地 HTTP/业务 socket。
+  max_connections: 64
+  allow_public_listen: false
+  # services:  # 普通 TCP 服务；Hub nodes[].services 必须授权相同名称。
+  #   - name: ssh
+  #     target: 127.0.0.1:22
+  # forwards:  # 本地连接入口，目标需要 Hub allow 授权。
+  #   - listen: 127.0.0.1:2222
+  #     to: other/ssh
+# 纯 TCP Agent：把 with_webhook 和 webhook_only_via_hub 都改为 false。
+# 不要通过普通服务别名发布信任内部来源头的 webhook 监听器。
+# Hook 清单异步上报 Hub；本地加载回执不承诺上游立即同步。

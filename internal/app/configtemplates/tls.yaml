@@ -1,0 +1,16 @@
+# 原生 HTTPS 服务；必须先提供真实证书、私钥和 Hook 数组文件。
+ip: 127.0.0.1
+port: 9443
+hooks: ["./hooks.yaml"]
+nopanic: true
+hotreload: true
+runtime-dir: "./.runtime"
+secure: true
+cert: ./certs/fullchain.pem
+key: ./certs/privkey.pem
+# 公共证书应覆盖访问域名；私有 CA 客户端需信任对应 CA，不跳过 TLS 校验。
+tls-min-version: "1.2"
+# cipher-suites: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 # 仅控制 TLS 1.2 等，不控制 TLS 1.3。
+# 证书续期后显式重启进程，Hook 热刷新不重载证书。
+# 使用反向代理终止 HTTPS 时请改用 global 模板、配置可信代理和来源限制。
+# systemd socket 激活由系统管理监听器，相关说明见 docs/Systemd-Activation.md。

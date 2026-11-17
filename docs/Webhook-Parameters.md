@@ -9,6 +9,7 @@
 | `-c` / `-config` / `--config` | 空 | YAML 总配置路径 |
 | `-hooks` | 无输入时尝试 hooks.json | Hook 文件，可重复；JSON/YAML |
 | `-hooks-dir` | 空 | Hook 目录，可重复；只扫描直接子文件并始终监听 |
+| `-runtime-dir` | 空 | 可选私有运行目录，用于 CLI 发现实例及主动刷新回执 |
 | `-hotreload` | false | 监听显式 hooks 文件变化 |
 | `-template` | false | 按 Go 模板渲染 Hook 文件 |
 | `-ip` | 0.0.0.0 | 监听 IP |
@@ -72,7 +73,17 @@
 
 ## 子命令
 
-子命令使用自己的参数，不继承服务总配置或服务级 `-update-*`。`webhook agent --help`、`webhook update --help` 提供对应帮助。
+子命令使用自己的参数；hooks 的 --config 显式选择磁盘配置，不继承正在运行实例的全部 CLI 参数；update/临时 agent 不读取服务总配置或服务级 `-update-*`。`webhook agent --help`、`webhook update --help` 提供对应帮助。
+
+本地管理与模板：
+
+- `config template list [--json]`：查看分类模板及正确使用入口。
+- `config template <名称> [--format yaml|json] [--output 路径]`：生成模板，默认注释 YAML，不覆盖已有文件。
+- `config init --dir 目录 [--profile global|hub|agent|both] [--format yaml|json] [--dry-run]`：创建带空 Hook 文件的场景目录。
+- `hooks list/show/validate/add/update/delete/reload/test/explain`：配置管理与本地测试。
+- `service install/uninstall/start/stop/restart/status/enable/disable`：Linux systemd 原生管理，真实环境验收待完成；其他平台尚未实现。
+
+详细参数和生效边界见 [CLI 本地管理](CLI-Management.md)，各子命令 `--help` 是当前版本的准确入口。Hook 的 Go `-template` 渲染与这里的静态“生成参考模板”是不同功能。
 
 | 子命令 | 参数 |
 | --- | --- |

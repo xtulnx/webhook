@@ -54,6 +54,7 @@ func watchForSignals() {
 					log.Printf("Failed to remove socket file %s: %v", socket, err)
 				}
 			}
+			stopRuntimeControl()
 			os.Exit(0)
 
 		default:

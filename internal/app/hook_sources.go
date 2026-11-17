@@ -162,6 +162,8 @@ func directoryHooksFiles(directory string) ([]string, error) {
 }
 
 func syncHooksDirectory(directory string) error {
+	hookApplyMu.Lock()
+	defer hookApplyMu.Unlock()
 	files, err := directoryHooksFiles(directory)
 	if err != nil {
 		return err
@@ -183,7 +185,7 @@ func syncHooksDirectory(directory string) error {
 	}
 	loadedHooksMu.RUnlock()
 	for _, path := range removed {
-		removeHooks(path)
+		removeHooksUnserialized(path)
 	}
 
 	parsed := make(map[string]hook.Hooks, len(files))
@@ -244,6 +246,8 @@ func syncHooksDirectory(directory string) error {
 }
 
 func reloadHooks(path string) error {
+	hookApplyMu.Lock()
+	defer hookApplyMu.Unlock()
 	log.Printf("attempting to load hooks from %s", path)
 
 	info, err := os.Stat(path)
@@ -305,6 +309,12 @@ func markHookLoadedLocked(path string, loadedAt time.Time) {
 }
 
 func removeHooks(path string) {
+	hookApplyMu.Lock()
+	defer hookApplyMu.Unlock()
+	removeHooksUnserialized(path)
+}
+
+func removeHooksUnserialized(path string) {
 	loadedHooksMu.Lock()
 	removedCount := len(loadedHooksFromFiles[path])
 	delete(loadedHooksFromFiles, path)

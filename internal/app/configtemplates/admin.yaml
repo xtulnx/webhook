@@ -1,0 +1,19 @@
+# Admin 是全局配置的扩展；先生成 global，再将本节合并进同一个对象。
+# 本模板自身也含最小服务设置；开启前准备 Hook 数组文件并填入独立随机密钥。
+ip: 127.0.0.1
+port: 9000
+hooks: ["./hooks.yaml"]
+nopanic: true
+hotreload: true
+runtime-dir: "./.runtime"
+admin: false # 替换下面两个占位符后再改 true；不提供固定演示口令。
+admin-path: admin
+admin-totp-secret: REPLACE_WITH_RANDOM_BASE32_SECRET
+admin-jwt-secret: REPLACE_WITH_ANOTHER_RANDOM_SECRET
+admin-session-ttl: 1h
+# 登录：兼容 TOTP 的认证器产生动态码；不使用用户名/固定密码登录。
+# 支持修改已加载 Hook、查询节点和检查更新；模板模式下 Hook 写入只读。
+# 对外部署需要 HTTPS、来源限制与登录限流；当前没有内置独立登录限流。
+update-enabled: true
+update-repository: xtulnx/webhook
+# update-state-dir 是尚未接入的预留项，不应把它当成生效的安装目录。
