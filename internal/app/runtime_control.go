@@ -273,7 +273,7 @@ func runtimeControlCall(ctx context.Context, dir string, rec runtimeRecord, req 
 	var result controlResponse
 	c, err := dialRuntimeControl(ctx, dir, rec.ID)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("连接控制端点：%w", err)
 	}
 	defer c.Close()
 	if deadline, ok := ctx.Deadline(); ok {
@@ -281,10 +281,10 @@ func runtimeControlCall(ctx context.Context, dir string, rec runtimeRecord, req 
 	}
 	req.ID = rec.ID
 	if err = json.NewEncoder(c).Encode(req); err != nil {
-		return result, err
+		return result, fmt.Errorf("发送控制请求：%w", err)
 	}
 	if err = json.NewDecoder(io.LimitReader(c, 1<<20)).Decode(&result); err != nil {
-		return result, err
+		return result, fmt.Errorf("读取控制回执：%w", err)
 	}
 	if result.Instance != rec {
 		return result, errors.New("控制回执实例身份不匹配")

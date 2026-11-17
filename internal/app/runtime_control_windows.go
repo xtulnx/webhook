@@ -115,7 +115,14 @@ func listenRuntimeControl(_ string, id string) (net.Listener, error) {
 	if e != nil {
 		return nil, e
 	}
-	return winio.ListenPipe(runtimePipe(id), &winio.PipeConfig{SecurityDescriptor: sddl})
+	// Keep the JSON round trip framed by writes and allow short requests and
+	// replies to queue even when the other end has not started reading yet.
+	return winio.ListenPipe(runtimePipe(id), &winio.PipeConfig{
+		SecurityDescriptor: sddl,
+		MessageMode:        true,
+		InputBufferSize:    64 << 10,
+		OutputBufferSize:   64 << 10,
+	})
 }
 func dialRuntimeControl(ctx context.Context, _ string, id string) (net.Conn, error) {
 	return winio.DialPipeContext(ctx, runtimePipe(id))
