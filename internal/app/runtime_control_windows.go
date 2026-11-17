@@ -42,36 +42,11 @@ func secureRuntimeDirectory(dir string, create bool) error {
 		if e != nil {
 			return e
 		}
-		owner, _, e := sd.Owner()
+		user, e := windows.GetCurrentProcessToken().GetTokenUser()
 		if e != nil {
 			return e
 		}
-		sddl := sd.String()
-		at := strings.Index(sddl, "D:")
-		if at < 0 {
-			return errors.New("runtime-dir 缺少明确 DACL")
-		}
-		d := sddl[at+2:]
-		if !strings.Contains(strings.SplitN(d, "(", 2)[0], "P") {
-			return errors.New("runtime-dir DACL 必须禁止宽泛继承")
-		}
-		allowed := map[string]bool{"SY": true, "BA": true, "S-1-5-18": true, "S-1-5-32-544": true, owner.String(): true}
-		count := 0
-		for _, part := range strings.Split(d, "(")[1:] {
-			end := strings.Index(part, ")")
-			if end < 0 {
-				return errors.New("runtime-dir DACL 无效")
-			}
-			fields := strings.Split(part[:end], ";")
-			if len(fields) != 6 || fields[0] != "A" || !allowed[fields[5]] {
-				return errors.New("runtime-dir 授权超出所有者与系统管理员")
-			}
-			count++
-		}
-		if count == 0 {
-			return errors.New("runtime-dir DACL 不能为空")
-		}
-		return nil
+		return validateRuntimeDirectoryDACL(sd, user.User.Sid)
 	}
 	sddl, e := runtimeSecurity()
 	if e != nil {
@@ -87,6 +62,53 @@ func secureRuntimeDirectory(dir string, create bool) error {
 	}
 	return windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
 }
+
+func validateRuntimeDirectoryDACL(sd *windows.SECURITY_DESCRIPTOR, currentUser *windows.SID) error {
+	control, _, e := sd.Control()
+	if e != nil {
+		return e
+	}
+	if control&windows.SE_DACL_PRESENT == 0 {
+		return errors.New("runtime-dir 缺少明确 DACL")
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return errors.New("runtime-dir DACL 必须禁止宽泛继承")
+	}
+	owner, _, e := sd.Owner()
+	if e != nil {
+		return e
+	}
+	// Elevated tokens can default to Administrators as the directory owner,
+	// while the DACL created by runtimeSecurity grants the process user's SID.
+	adminOwned := owner.IsWellKnown(windows.WinBuiltinAdministratorsSid)
+	_, d, _ := strings.Cut(sd.String(), "D:")
+	entries := strings.Split(d, "(")[1:]
+	if len(entries) == 0 {
+		return errors.New("runtime-dir DACL 不能为空")
+	}
+	for _, entry := range entries {
+		ace, _, ok := strings.Cut(entry, ")")
+		fields := strings.Split(ace, ";")
+		if !ok || len(fields) != 6 || fields[0] != "A" {
+			return errors.New("runtime-dir DACL 包含不受支持的授权条目")
+		}
+		// Resolve both numeric SIDs and the aliases Windows emits in SDDL.
+		trustee, e := windows.SecurityDescriptorFromString("O:" + fields[5])
+		if e != nil {
+			return e
+		}
+		sid, _, e := trustee.Owner()
+		if e != nil {
+			return e
+		}
+		if !sid.Equals(owner) && !sid.IsWellKnown(windows.WinLocalSystemSid) &&
+			!sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) && !(adminOwned && sid.Equals(currentUser)) {
+			return errors.New("runtime-dir DACL 包含未授权账户")
+		}
+	}
+	return nil
+}
+
 func runtimePipe(id string) string { return `\\.\pipe\webhook-control-` + id }
 func listenRuntimeControl(_ string, id string) (net.Listener, error) {
 	sddl, e := runtimeSecurity()

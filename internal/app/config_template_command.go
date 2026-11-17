@@ -68,7 +68,12 @@ func templateYAML(name string) ([]byte, error) {
 	if !known {
 		return nil, fmt.Errorf("未知模板 %q；使用 webhook config template list 查看用途", name)
 	}
-	return configurationTemplates.ReadFile("configtemplates/" + name + ".yaml")
+	data, err := configurationTemplates.ReadFile("configtemplates/" + name + ".yaml")
+	if err != nil {
+		return nil, err
+	}
+	// Embedded templates may come from a Git checkout with CRLF line endings.
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")), nil
 }
 func indentTemplate(s string) string {
 	return "  " + strings.ReplaceAll(strings.TrimSuffix(s, "\n"), "\n", "\n  ") + "\n"

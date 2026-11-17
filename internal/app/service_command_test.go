@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,14 +61,14 @@ func testSystemdFiles() systemdFiles {
 		return s, raw, e
 	}, prepareRuntime: func(serviceInstallSpec) (func(), error) { return func() {}, nil }}
 }
-func testServiceSpec(dir string) serviceInstallSpec {
-	return serviceInstallSpec{Executable: filepath.Join(dir, "webhook"), Config: filepath.Join(dir, "config.yaml"), Directory: dir, User: "webhook", RuntimeDirectory: "/run/webhook"}
+func testServiceSpec() serviceInstallSpec {
+	return serviceInstallSpec{Executable: "/opt/webhook/webhook", Config: "/opt/webhook/config.yaml", Directory: "/opt/webhook", User: "webhook", RuntimeDirectory: "/run/webhook"}
 }
 
 func TestManagedServiceLifecyclePolicy(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "webhook.service")
-	s := testServiceSpec(dir)
+	s := testServiceSpec()
 	backend := &fakeSystemd{path: path, state: map[string]interface{}{"LoadState": "not-found"}}
 	call := func(action string) (interface{}, error) {
 		return manageSystemd(context.Background(), backend, path, serviceOptions{Action: action, Spec: s}, testSystemdFiles())
@@ -126,7 +127,7 @@ func TestServiceInstallRejectsConflictsAndRollsBack(t *testing.T) {
 			case "reloadFailure":
 				backend.reloadError = errors.New("injected failure")
 			}
-			_, e := manageSystemd(context.Background(), backend, path, serviceOptions{Action: "install", Spec: testServiceSpec(dir)}, testSystemdFiles())
+			_, e := manageSystemd(context.Background(), backend, path, serviceOptions{Action: "install", Spec: testServiceSpec()}, testSystemdFiles())
 			if e == nil {
 				t.Fatal("conflict accepted")
 			}
@@ -144,7 +145,7 @@ func TestServiceInstallRejectsConflictsAndRollsBack(t *testing.T) {
 func TestServiceStatusIsReadOnly(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "webhook.service")
-	raw, e := renderManagedUnit(testServiceSpec(dir))
+	raw, e := renderManagedUnit(testServiceSpec())
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -161,8 +162,8 @@ func TestServiceStatusIsReadOnly(t *testing.T) {
 	}
 }
 func TestServiceUnitExpansionAndTamperDetection(t *testing.T) {
-	s := testServiceSpec(t.TempDir())
-	s.Config = filepath.Join(s.Directory, "$CONFIG%name with spaces.yaml")
+	s := testServiceSpec()
+	s.Config = path.Join(s.Directory, "$CONFIG%name with spaces.yaml")
 	raw, e := renderManagedUnit(s)
 	if e != nil {
 		t.Fatal(e)

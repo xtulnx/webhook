@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -192,7 +193,7 @@ func systemdValue(value string, argument bool) (string, error) {
 }
 func renderManagedUnit(s serviceInstallSpec) ([]byte, error) {
 	for _, p := range []string{s.Config, s.Directory, s.Executable, s.RuntimeDirectory} {
-		if !filepath.IsAbs(p) {
+		if !path.IsAbs(p) {
 			return nil, errors.New("服务路径必须是绝对路径")
 		}
 	}
