@@ -1,5 +1,5 @@
 # 独立组网文件：通过全局配置 network-config: ./network.yaml 引用。
-# 本文件不是 webhook --config 的顶层结构；完整服务配置请选择 hub 模板。
+# 本文件不是 webhook --config 的顶层结构；完整服务配置请选择 global hub 组合。
 mode: hub
 hub:
   request_timeout: 60s

@@ -68,9 +68,17 @@ func runConfigCommand(args []string, stdout, stderr io.Writer) int {
 	} else if !os.IsNotExist(err) {
 		return fail(err)
 	}
-	configuration, e := templateYAML(*profile)
+	modules := []string{"global"}
+	if *profile != "global" {
+		modules = append(modules, *profile)
+	}
+	configuration, e := composeTemplateYAML(modules)
 	if e != nil {
 		return fail(e)
+	}
+	// Preserve the init bundle's distinct upstream/downstream listener defaults.
+	if *profile == "both" {
+		configuration = []byte(strings.Replace(string(configuration), "port: 9000\n", "port: 9001\n", 1))
 	}
 	configName := "webhook." + *format
 	hooksName := "hooks." + *format

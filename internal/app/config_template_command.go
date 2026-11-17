@@ -28,14 +28,14 @@ var templateCatalog = []configTemplateInfo{
 	{"global", "全局配置：本机监听、来源/执行/日志及其他功能索引", "webhook --config webhook.yaml"},
 	{"hook", "单个 Hook 对象：基础字段、规则、参数、上传及环境映射", "webhook hooks add --config webhook.yaml --file hooks.yaml --from hook.yaml"},
 	{"hooks", "Hook 数组文件：用于服务直接加载", "webhook -hooks hooks.yaml"},
-	{"hub", "完整 Hub 服务配置：节点授权与公开路由", "webhook --config hub.yaml"},
-	{"agent", "完整 Agent 服务配置：通过 Hub 执行本地 Hook", "webhook --config agent.yaml"},
-	{"both", "完整级联服务配置：下游 Hub 与上游 Agent 共存", "webhook --config both.yaml"},
+	{"hub", "Hub 模块：仅 network 节点授权与公开路由", "与 global/admin/tls 组合，或合入已有总配置"},
+	{"agent", "Agent 模块：仅 network，通过 Hub 执行本地 Hook", "与 global/admin/tls 组合，或合入已有总配置"},
+	{"both", "级联模块：仅 network，下游 Hub 与上游 Agent 共存", "与 global/admin/tls 组合；按需调整本机监听端口"},
 	{"network-hub", "独立 Hub 组网配置；不是服务总配置", "通过总配置 network-config 引用"},
 	{"network-agent", "独立 Agent 组网配置；不是服务总配置", "通过总配置 network-config 引用"},
 	{"network-both", "独立级联组网配置；不是服务总配置", "通过总配置 network-config 引用"},
-	{"admin", "Admin/TOTP/JWT 配置：默认关闭，启用前替换密钥", "webhook --config admin.yaml"},
-	{"tls", "HTTPS 服务配置：先提供真实证书与私钥", "webhook --config tls.yaml"},
+	{"admin", "Admin/TOTP/JWT 配置：默认关闭，启用前替换密钥", "与 global/hub/agent/both/tls 组合，或合入已有总配置"},
+	{"tls", "TLS 模块：仅 HTTPS 字段，先提供真实证书与私钥", "与 global/hub/agent/both/admin 组合；监听端口由 global 设置"},
 	{"context", "本地 test/explain 上下文：不是真实网络请求", "webhook hooks explain --config webhook.yaml --id example --context context.yaml"},
 }
 
@@ -48,10 +48,6 @@ func templateYAML(name string) ([]byte, error) {
 		}
 		return []byte("# Hook 数组文件，适用于 -hooks 或总配置 hooks；请编辑命令路径。\n-\n" + indentTemplate(string(data))), nil
 	case "hub", "agent", "both":
-		global, e := templateYAML("global")
-		if e != nil {
-			return nil, e
-		}
 		net, e := templateYAML("network-" + name)
 		if e != nil {
 			return nil, e
@@ -60,10 +56,7 @@ func templateYAML(name string) ([]byte, error) {
 		for len(lines) > 0 && (strings.HasPrefix(lines[0], "#") || strings.TrimSpace(lines[0]) == "") {
 			lines = lines[1:]
 		}
-		if name == "both" {
-			global = []byte(strings.Replace(string(global), "port: 9000\n", "port: 9001\n", 1))
-		}
-		return []byte(string(global) + "\n# 以下为内联组网配置；凭据需在启动前准备，不能再同时设置 network-config。\nnetwork:\n" + indentTemplate(strings.Join(lines, "\n"))), nil
+		return []byte("# 组网模块：合入总配置，或与 global/admin/tls 一起生成。\n# 凭据需在启动前准备，不能再同时设置 network-config。\nnetwork:\n" + indentTemplate(strings.Join(lines, "\n"))), nil
 	}
 	known := false
 	for _, item := range templateCatalog {
@@ -81,7 +74,70 @@ func indentTemplate(s string) string {
 	return "  " + strings.ReplaceAll(strings.TrimSuffix(s, "\n"), "\n", "\n  ") + "\n"
 }
 func renderConfigTemplate(name, format string) ([]byte, error) {
-	data, e := templateYAML(name)
+	return renderConfigTemplates([]string{name}, format)
+}
+
+// Compose only modules sharing the service configuration schema. Keep source
+// comments and a canonical order; reject conflicts rather than silently overriding.
+func composeTemplateYAML(names []string) ([]byte, error) {
+	if len(names) == 0 {
+		return nil, errors.New("请指定至少一个模板名称")
+	}
+	selected := make(map[string]bool)
+	mode := ""
+	for _, name := range names {
+		if selected[name] {
+			return nil, fmt.Errorf("重复模板 %q；每个模块只需指定一次", name)
+		}
+		selected[name] = true
+		switch name {
+		case "hub", "agent", "both":
+			if mode != "" {
+				return nil, errors.New("hub、agent、both 互斥；级联场景请选择 both")
+			}
+			mode = name
+		case "global", "admin", "tls":
+		default:
+			data, e := templateYAML(name)
+			if e != nil {
+				return nil, e
+			}
+			if len(names) > 1 {
+				return nil, fmt.Errorf("%s 使用独立文件结构，不能与其他模板组合；可组合模块为 global、hub/agent/both、admin、tls", name)
+			}
+			return data, nil
+		}
+	}
+	var result bytes.Buffer
+	keys := make(map[string]string)
+	for _, name := range []string{"global", "hub", "agent", "both", "admin", "tls"} {
+		if !selected[name] {
+			continue
+		}
+		data, e := templateYAML(name)
+		if e != nil {
+			return nil, e
+		}
+		var fields map[string]interface{}
+		if e := yaml.Unmarshal(data, &fields); e != nil {
+			return nil, e
+		}
+		for key := range fields {
+			if previous, exists := keys[key]; exists {
+				return nil, fmt.Errorf("模板 %s 与 %s 的字段 %s 冲突", previous, name, key)
+			}
+			keys[key] = name
+		}
+		if result.Len() > 0 {
+			result.WriteByte('\n')
+		}
+		result.Write(data)
+	}
+	return result.Bytes(), nil
+}
+
+func renderConfigTemplates(names []string, format string) ([]byte, error) {
+	data, e := composeTemplateYAML(names)
 	if e != nil {
 		return nil, e
 	}
@@ -104,7 +160,7 @@ func renderConfigTemplate(name, format string) ([]byte, error) {
 }
 func runConfigTemplateCommand(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
-		fmt.Fprintln(stdout, "用法：webhook config template list [--json]\n      webhook config template <名称> [--format yaml|json] [--output 路径]\n默认输出带中文注释的 YAML；JSON 无注释。先查看 list 选择用途，生成后按注释填写，不会执行或自动应用配置。")
+		fmt.Fprintln(stdout, "用法：webhook config template list [--json]\n      webhook config template <模块> [模块...] [--format yaml|json] [--output 路径]\n默认输出带中文注释的 YAML；JSON 无注释。子模块仅生成目标字段。可组合 global、hub/agent/both（三选一）、admin、tls；其余模板单独生成。模块名放在选项之前。\n示例：webhook config template global hub admin --output webhook.yaml\n生成后按注释填写，不会执行或自动应用配置。")
 		if len(args) == 0 {
 			return 2
 		}
@@ -141,14 +197,19 @@ func runConfigTemplateCommand(args []string, stdout, stderr io.Writer) int {
 	setCommandHelp(fs, "生成参考模板；stdout 仅输出配置，写文件时拒绝覆盖已有路径。")
 	format := fs.String("format", "yaml", "输出格式：yaml（带注释）或 json（无注释）")
 	output := fs.String("output", "", "输出文件；留空或 - 输出到终端，不修改现有运行配置")
-	if e := fs.Parse(args[1:]); e != nil {
+	moduleEnd := 0
+	for moduleEnd < len(args) && !strings.HasPrefix(args[moduleEnd], "-") {
+		moduleEnd++
+	}
+	names := args[:moduleEnd]
+	if e := fs.Parse(args[moduleEnd:]); e != nil {
 		if errors.Is(e, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "多余的位置参数")
+		fmt.Fprintln(stderr, "请将所有模块名放在 --format/--output 等选项之前")
 		return 2
 	}
 	explicitFormat := false
@@ -175,7 +236,7 @@ func runConfigTemplateCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "format 仅支持 yaml 或 json")
 		return 2
 	}
-	data, e := renderConfigTemplate(args[0], *format)
+	data, e := renderConfigTemplates(names, *format)
 	if e != nil {
 		fmt.Fprintln(stderr, e)
 		return 2

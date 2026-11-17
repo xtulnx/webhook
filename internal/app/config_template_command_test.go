@@ -74,7 +74,7 @@ func TestConfigurationTemplatesParseAndCoverSchemas(t *testing.T) {
 							t.Fatal("unknown global key", key)
 						}
 					}
-					if cfg["ip"] != "127.0.0.1" {
+					if item.Name == "global" && cfg["ip"] != "127.0.0.1" {
 						t.Fatal("template exposes public listener")
 					}
 					if n, ok := cfg["network"]; ok {
@@ -183,6 +183,16 @@ func TestConfigInitProfilesAndFormats(t *testing.T) {
 				if paths := settings["hooks"].([]interface{}); paths[0] != filepath.Join(target, "hooks."+format) {
 					t.Fatal("init path incorrect", paths)
 				}
+				if settings["ip"] != "127.0.0.1" {
+					t.Fatal("init missing global defaults")
+				}
+				expectedPort := float64(9000)
+				if profile == "both" {
+					expectedPort = 9001
+				}
+				if settings["port"] != expectedPort {
+					t.Fatal("init port changed", settings["port"])
+				}
 				if profile != "global" {
 					n, e := yaml.Marshal(settings["network"])
 					if e != nil {
@@ -194,5 +204,112 @@ func TestConfigInitProfilesAndFormats(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Exercise the CLI and resulting schema for every supported module combination.
+func TestTemplateModuleCombinations(t *testing.T) {
+	t.Setenv("WEBHOOK_NODE_TOKEN", strings.Repeat("n", 32))
+	t.Setenv("WEBHOOK_UPSTREAM_TOKEN", strings.Repeat("u", 32))
+	for _, mode := range []string{"", "hub", "agent", "both"} {
+		for mask := 0; mask < 8; mask++ {
+			names := []string{}
+			if mode != "" {
+				names = append(names, mode)
+			}
+			for i, name := range []string{"global", "admin", "tls"} {
+				if mask&(1<<i) != 0 {
+					names = append(names, name)
+				}
+			}
+			if len(names) == 0 {
+				continue
+			}
+			t.Run(strings.Join(names, "+"), func(t *testing.T) {
+				var yamlFields map[string]interface{}
+				for _, format := range []string{"yaml", "json"} {
+					var out, errs bytes.Buffer
+					args := append([]string{"template"}, names...)
+					args = append(args, "--format", format)
+					if code := runConfigCommand(args, &out, &errs); code != 0 {
+						t.Fatal(code, errs.String())
+					}
+					var fields map[string]interface{}
+					if e := yaml.Unmarshal(out.Bytes(), &fields); e != nil {
+						t.Fatal(e)
+					}
+					if format == "yaml" {
+						yamlFields = fields
+						if !bytes.Contains(out.Bytes(), []byte("#")) {
+							t.Fatal("comments lost")
+						}
+					} else if !json.Valid(out.Bytes()) || !reflect.DeepEqual(fields, yamlFields) {
+						t.Fatal("JSON and YAML differ")
+					}
+					_, hasIP := fields["ip"]
+					_, hasHooks := fields["hooks"]
+					if hasIP != (mask&1 != 0) || hasHooks != hasIP {
+						t.Fatal("global fields leaked or missing", fields)
+					}
+					if mask&1 != 0 && fields["port"] != float64(9000) {
+						t.Fatal("module changed global port")
+					}
+					_, hasAdmin := fields["admin"]
+					_, hasTLS := fields["secure"]
+					if hasAdmin != (mask&2 != 0) || hasTLS != (mask&4 != 0) {
+						t.Fatal("module fields leaked or missing")
+					}
+					if mode != "" {
+						raw, e := yaml.Marshal(fields["network"])
+						if e != nil {
+							t.Fatal(e)
+						}
+						if _, e := network.ParseConfig(raw, t.TempDir()); e != nil {
+							t.Fatal(e)
+						}
+					} else if _, ok := fields["network"]; ok {
+						t.Fatal("unexpected network")
+					}
+				}
+				reversed := append([]string(nil), names...)
+				for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
+					reversed[i], reversed[j] = reversed[j], reversed[i]
+				}
+				a, e := renderConfigTemplates(names, "yaml")
+				if e != nil {
+					t.Fatal(e)
+				}
+				b, e := renderConfigTemplates(reversed, "yaml")
+				if e != nil || !bytes.Equal(a, b) {
+					t.Fatal("module ordering changed output", e)
+				}
+			})
+		}
+	}
+}
+
+func TestTemplateModuleErrorsDoNotWrite(t *testing.T) {
+	for _, names := range [][]string{
+		{"hub", "agent"}, {"hub", "both"}, {"agent", "both"},
+		{"global", "global"}, {"admin", "admin"}, {"global", "typo"},
+		{"global", "hook"}, {"hooks", "global"}, {"context", "admin"},
+		{"network-hub", "hub"}, {"network-hub", "network-agent"},
+	} {
+		t.Run(strings.Join(names, "+"), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "out.yaml")
+			args := append([]string{"template"}, names...)
+			args = append(args, "--output", path)
+			var out, errs bytes.Buffer
+			if code := runConfigCommand(args, &out, &errs); code != 2 || out.Len() != 0 || errs.Len() == 0 {
+				t.Fatal(code, out.String(), errs.String())
+			}
+			if _, e := os.Stat(path); !os.IsNotExist(e) {
+				t.Fatal("invalid combination created output", e)
+			}
+		})
+	}
+	var out, errs bytes.Buffer
+	if code := runConfigCommand([]string{"template", "global", "--format", "yaml", "admin"}, &out, &errs); code != 2 || out.Len() != 0 {
+		t.Fatal("misplaced module accepted")
 	}
 }

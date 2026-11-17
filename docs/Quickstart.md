@@ -27,7 +27,7 @@ webhook hooks add --config ./local/webhook.yaml --file ./local/hooks.yaml --from
 webhook --config ./local/webhook.yaml
 ```
 
-如果从源码构建且未添加 PATH，请将上述 webhook 换成 ./build/webhook（Windows 为 ./build/webhook.exe）。查看 Hub/Agent 等场景请用 `config template list`；完整注释默认使用 YAML，`--format json` 可生成无注释 JSON。模板使用边界见 [CLI 本地管理](CLI-Management.md)。
+如果从源码构建且未添加 PATH，请将上述 webhook 换成 ./build/webhook（Windows 为 ./build/webhook.exe）。查看 Hub/Agent 等场景请用 `config template list`；完整注释默认使用 YAML，`--format json` 可生成无注释 JSON。子模块只生成对应字段；可用 `webhook config template global hub admin --output hub.yaml` 组合总配置。模板使用边界见 [CLI 本地管理](CLI-Management.md)。
 
 ## 构建与启动
 

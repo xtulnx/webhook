@@ -35,8 +35,8 @@ webhook config template list
 webhook config init --dir ./local
 webhook config template hook --output ./local/new-hook.yaml
 # 按注释编辑新 Hook 的 ID、命令和规则，再通过 hooks add --from 添加。
-webhook config template hub --output hub.yaml
-webhook config template agent --format json --output agent.json
+webhook config template global hub admin --output hub.yaml
+webhook config template global agent --format json --output agent.json
 ```
 
 全局、Hook 数组/单对象、Hub/Agent/级联、Admin、TLS、本地测试上下文均有模板。完整用途及“查看 → 填写 → 校验 → 应用”流程见 [CLI 配置管理](docs/CLI-Management.md)。Hub/Agent 启动前必须配置真实地址和独立令牌；生成模板不会自动启动服务。

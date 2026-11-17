@@ -60,7 +60,9 @@ webhook config template list
 webhook config template global                       # 在终端查看带中文注释的 YAML
 webhook config template hook --output new-hook.yaml  # 新建单个 Hook 对象
 webhook config template hooks --output hooks.json    # 根据扩展名自动生成 JSON 数组
-webhook config template hub --format json            # JSON 无注释，也不伪造 _comment 字段
+webhook config template hub                         # 仅 network 字段，合入已有总配置
+webhook config template global hub admin --output hub.yaml # 一次组合总配置
+webhook config template global agent tls --output agent.json # JSON 无注释
 ```
 
 | 模板名称 | 顶层结构及用途 | 填写要求 |
@@ -68,11 +70,17 @@ webhook config template hub --format json            # JSON 无注释，也不�
 | global | 完整服务对象，交给 `webhook --config` | 准备 hooks 数组文件；注释按监听、路径、执行、日志及扩展功能分组 |
 | hook | 单个 Hook 对象，交给 `hooks add/update --from` | 必改命令路径和 ID；说明参数/环境/文件映射、触发规则及响应行为 |
 | hooks | Hook 对象数组，交给 `-hooks` 或全局 `hooks` | 必改示例命令路径；不可把整个数组传给 add --from |
-| hub / agent / both | 完整服务对象，内含对应 network 配置 | 启动前准备各自 token_env 指定的高熵令牌和真实地址；both 为级联示例 |
+| hub / agent / both | 仅包含 network 的总配置片段；可与 global/admin/tls 组合 | 启动前准备各自 token_env 指定的高熵令牌和真实地址；both 为级联示例 |
 | network-hub / network-agent / network-both | 独立组网对象，交给全局 `network-config` | 不能直接当作 `--config` 总配置；支持节点、路由、服务、转发和级联字段说明 |
-| admin | 完整服务对象，包含 TOTP/JWT 与更新检查 | 默认关闭 Admin；替换占位密钥后再启用 |
-| tls | 完整 HTTPS 服务对象 | 准备真实证书、私钥和 Hook 数组文件 |
+| admin | 仅 Admin、TOTP/JWT 与更新检查字段 | 默认关闭 Admin；替换占位密钥后再启用 |
+| tls | 仅 HTTPS 字段，不改变监听端口 | 准备真实证书、私钥；在总配置设置 port（例如 9443） |
 | context | 本地 test/explain 上下文 | 可选 body/payload/上传文件；引用文件路径相对上下文文件目录 |
+
+**组合规则：** 模块名以空格分隔，放在选项之前，例如 `global hub admin --format yaml`。只有 `global`、`hub/agent/both`、`admin`、`tls` 共用总配置结构，可自由组合；无需强制包含 global，例如 `hub admin` 可以生成用于手工合入现有配置的片段。输出始终按“global → 组网 → admin → tls”排序，保留注释，生成单个对象，不依赖参数顺序覆盖字段。重复模块、重复配置键或多种组网模式会报错；级联使用 `both`，不拼接 `hub agent`。
+
+`hook`、`hooks`、`context`、`network-*` 的文件结构或加载入口不同，必须各自生成。子模块在 YAML 和 JSON 下都只输出目标字段，不再附带全局配置；原先依赖 `template hub/agent/both/admin/tls` 生成完整文件的用法，改为在模块前加 `global`。片段不会继承 global 模板中的本机监听等默认示例，不建议直接作为完整部署配置使用。
+
+`config init --profile hub|agent|both` 仍生成含全局设置和空 Hook 文件的完整目录。模板组合不擅自修改 global 的端口；级联示例需手动区分上下游端口（init 的 both 场景仍默认 9001）。模板只生成新内容，合入已有配置仍由用户编辑完成。
 
 YAML 的常用字段直接启用，其他功能以注释示例提供；注释指出默认值、相对路径基准、互斥配置和风险边界。取消注释时按场景选择，不要把互斥片段和重复键一起启用。JSON 只保留对应的有效配置字段；要查完整功能和可选字段说明，可查看同名 YAML 模板。目录支持 `list --json`，每项含用途与使用入口。
 

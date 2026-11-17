@@ -42,7 +42,8 @@ verbose: false
 # setuid: 1000  # Unix 降权；必须同时设置 setgid，不能与 socket 同用。
 # setgid: 1000
 
-# 【其他能力入口】按场景生成独立模板，不必记住每个字段。
+# 【其他能力入口】子模块仅生成对应字段；也可一次组合，例如：
+# webhook config template global hub admin --output webhook.yaml
 # Admin/TOTP/JWT：webhook config template admin
 # HTTPS/私有证书：webhook config template tls
 # Hub/Agent/级联：webhook config template hub / agent / both

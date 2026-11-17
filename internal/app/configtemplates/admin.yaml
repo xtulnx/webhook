@@ -1,11 +1,5 @@
-# Admin 是全局配置的扩展；先生成 global，再将本节合并进同一个对象。
-# 本模板自身也含最小服务设置；开启前准备 Hook 数组文件并填入独立随机密钥。
-ip: 127.0.0.1
-port: 9000
-hooks: ["./hooks.yaml"]
-nopanic: true
-hotreload: true
-runtime-dir: "./.runtime"
+# Admin 模块：仅包含管理界面字段；可与 global/hub/agent/both/tls 组合。
+# 开启前填入独立随机密钥。
 admin: false # 替换下面两个占位符后再改 true；不提供固定演示口令。
 admin-path: admin
 admin-totp-secret: REPLACE_WITH_RANDOM_BASE32_SECRET

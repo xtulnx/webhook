@@ -1,10 +1,5 @@
-# 原生 HTTPS 服务；必须先提供真实证书、私钥和 Hook 数组文件。
-ip: 127.0.0.1
-port: 9443
-hooks: ["./hooks.yaml"]
-nopanic: true
-hotreload: true
-runtime-dir: "./.runtime"
+# TLS 模块：仅包含 HTTPS 字段；可与 global/hub/agent/both/admin 组合。
+# 先提供真实证书和私钥；监听端口由总配置 port 决定（例如 9443），本模块不修改端口。
 secure: true
 cert: ./certs/fullchain.pem
 key: ./certs/privkey.pem
