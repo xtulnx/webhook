@@ -192,6 +192,8 @@ webhook service uninstall
 
 固定管理 `/etc/systemd/system/webhook.service`。安装预览不写文件、不连接 systemd；实际安装通过独占创建与持久锁协调，不覆盖现有单元。相同且未经修改的受管单元可幂等成功。新安装默认不启动、不设置开机自启；start/stop 与 enable/disable 分别控制当前运行状态和开机设置。
 
+旧版本生成的单元可能给 `User=` 和 `WorkingDirectory=` 加上引号，导致启动时报 `bad unit file setting`。升级程序后，对已停止的服务执行 `webhook service uninstall`，再用原参数安装并启动。如果此前设为开机自启，重新执行 `webhook service enable`。卸载会保留应用配置。
+
 单元内记录程序、总配置、工作目录和服务用户，全部路径绝对化并处理 systemd 的参数、变量及 specifier 展开。需要移动安装位置或改变单元设置时，先停止并卸载原受管单元，再重新安装；不提供隐式覆盖。程序二进制无需复制到其他位置，服务直接调用安装命令所使用的同一程序。
 
 默认使用 systemd 创建的 `/run/webhook` 私有运行目录；总配置可指定已有父目录下的自定义持久运行目录。自定义目录不存在时仅创建该状态目录并赋予服务用户所有权；已有目录所有者/权限不匹配时拒绝，不改业务目录权限。`/run` 下首版只支持 `/run/webhook`。CLI 可从对应受管单元记录发现实际运行目录，不需额外安装记录脚本。

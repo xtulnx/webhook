@@ -47,12 +47,12 @@ func manageSystemd(ctx context.Context, backend systemdBackend, path string, o s
 		if e != nil {
 			return nil, e
 		}
-		current, readErr := os.ReadFile(path)
+		existing, current, readErr := files.read(path)
 		if readErr == nil {
-			if _, _, e = files.read(path); e != nil {
-				return nil, e
-			}
 			if string(current) != string(desired) {
+				if corrected, renderErr := renderManagedUnit(existing); renderErr == nil && string(corrected) == string(desired) {
+					return nil, errors.New("已有旧版服务单元，请先卸载，再使用相同参数安装")
+				}
 				return nil, errors.New("已有受管服务配置不同，拒绝覆盖")
 			}
 			state, e := backend.State(ctx)
@@ -125,10 +125,11 @@ func manageSystemd(ctx context.Context, backend systemdBackend, path string, o s
 		if stateErr == nil {
 			active, _ := loaded["ActiveState"].(string)
 			enabled, _ := loaded["UnitFileState"].(string)
-			if active != "inactive" && active != "failed" {
+			if loaded["LoadState"] != "loaded" {
+				stateErr = fmt.Errorf("systemd 无法加载新注册的服务，LoadState=%v", loaded["LoadState"])
+			} else if active != "inactive" && active != "failed" {
 				stateErr = errors.New("新注册的服务出现非预期运行状态")
-			}
-			if enabled != "disabled" {
+			} else if enabled != "disabled" {
 				stateErr = errors.New("新注册服务出现非预期开机启动设置")
 			}
 		}

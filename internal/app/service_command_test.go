@@ -14,6 +14,7 @@ type fakeSystemd struct {
 	path        string
 	state       map[string]interface{}
 	reloadError error
+	loadState   string
 	jobs        []string
 	enabled     bool
 	reloads     int
@@ -27,6 +28,9 @@ func (f *fakeSystemd) Reload(context.Context) error {
 	}
 	if _, e := os.Stat(f.path); e == nil {
 		f.state = map[string]interface{}{"FragmentPath": f.path, "LoadState": "loaded", "ActiveState": "inactive", "SubState": "dead", "UnitFileState": "disabled"}
+		if f.loadState != "" {
+			f.state["LoadState"] = f.loadState
+		}
 		if f.enabled {
 			f.state["UnitFileState"] = "enabled"
 		}
@@ -105,7 +109,7 @@ func TestManagedServiceLifecyclePolicy(t *testing.T) {
 	}
 }
 func TestServiceInstallRejectsConflictsAndRollsBack(t *testing.T) {
-	for _, scenario := range []string{"foreign", "dropin", "managerConflict", "reloadFailure"} {
+	for _, scenario := range []string{"foreign", "dropin", "managerConflict", "reloadFailure", "badSetting"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "webhook.service")
@@ -126,6 +130,8 @@ func TestServiceInstallRejectsConflictsAndRollsBack(t *testing.T) {
 				backend.state["LoadState"] = "loaded"
 			case "reloadFailure":
 				backend.reloadError = errors.New("injected failure")
+			case "badSetting":
+				backend.loadState = "bad-setting"
 			}
 			_, e := manageSystemd(context.Background(), backend, path, serviceOptions{Action: "install", Spec: testServiceSpec()}, testSystemdFiles())
 			if e == nil {
@@ -163,6 +169,7 @@ func TestServiceStatusIsReadOnly(t *testing.T) {
 }
 func TestServiceUnitExpansionAndTamperDetection(t *testing.T) {
 	s := testServiceSpec()
+	s.Directory = "/opt/webhook %data"
 	s.Config = path.Join(s.Directory, "$CONFIG%name with spaces.yaml")
 	raw, e := renderManagedUnit(s)
 	if e != nil {
@@ -170,6 +177,19 @@ func TestServiceUnitExpansionAndTamperDetection(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "$$CONFIG%%name with spaces.yaml") {
 		t.Fatalf("unsafe expansion: %s", raw)
+	}
+	if !strings.Contains(string(raw), "\nUser=webhook\nWorkingDirectory=/opt/webhook %%data\n") {
+		t.Fatalf("invalid literal settings: %s", raw)
+	}
+	legacy, e := renderServiceUnit(s, true)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = parseManagedUnit(legacy); e != nil {
+		t.Fatalf("old unit cannot be managed after upgrade: %v", e)
+	}
+	if _, e = parseManagedUnit(append(legacy, []byte("Environment=INJECTED=yes\n")...)); e == nil {
+		t.Fatal("changed old unit accepted")
 	}
 	if _, e = parseManagedUnit(raw); e != nil {
 		t.Fatal(e)

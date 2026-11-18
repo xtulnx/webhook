@@ -179,35 +179,42 @@ func prepareServiceInstall(s serviceInstallSpec) (serviceInstallSpec, error) {
 	return s, nil
 }
 
-// systemd performs its own specifier and environment expansion; shell quoting
-// alone is not sufficient. Every argument is independently quoted and escaped.
-func systemdValue(value string, argument bool) (string, error) {
+// ExecStart arguments use systemd quoting and both specifier and environment expansion.
+func systemdArgument(value string) (string, error) {
 	if strings.ContainsAny(value, "\x00\r\n") {
 		return "", errors.New("systemd 参数不能包含 NUL 或换行")
 	}
 	value = strings.ReplaceAll(value, "%", "%%")
-	if argument {
-		value = strings.ReplaceAll(value, "$", "$$")
-	}
+	value = strings.ReplaceAll(value, "$", "$$")
 	return strconv.Quote(value), nil
 }
+
 func renderManagedUnit(s serviceInstallSpec) ([]byte, error) {
+	return renderServiceUnit(s, false)
+}
+
+func renderServiceUnit(s serviceInstallSpec, legacy bool) ([]byte, error) {
 	for _, p := range []string{s.Config, s.Directory, s.Executable, s.RuntimeDirectory} {
 		if !path.IsAbs(p) {
 			return nil, errors.New("服务路径必须是绝对路径")
 		}
 	}
-	wd, e := systemdValue(s.Directory, false)
-	if e != nil {
-		return nil, e
+	wd := strings.ReplaceAll(s.Directory, "%", "%%")
+	user := strings.ReplaceAll(s.User, "%", "%%")
+	if strings.ContainsAny(wd+user, "\x00\r\n") {
+		return nil, errors.New("systemd 参数不能包含 NUL 或换行")
 	}
-	user, e := systemdValue(s.User, false)
-	if e != nil {
-		return nil, e
+	// WorkingDirectory and User are literal settings. Only ExecStart uses word quoting.
+	if legacy {
+		wd = strconv.Quote(wd)
+		user = strconv.Quote(user)
+	} else if strings.TrimSpace(wd) != wd || strings.HasSuffix(wd, "\\") ||
+		strings.TrimSpace(user) != user || strings.HasSuffix(user, "\\") {
+		return nil, errors.New("systemd 工作目录和用户不能以空白或反斜杠结尾")
 	}
 	parts := []string{}
 	for _, arg := range []string{s.Executable, "-config", s.Config, "-runtime-dir", s.RuntimeDirectory} {
-		v, e := systemdValue(arg, true)
+		v, e := systemdArgument(arg)
 		if e != nil {
 			return nil, e
 		}
@@ -238,11 +245,13 @@ func parseManagedUnit(raw []byte) (serviceInstallSpec, error) {
 		return s, e
 	}
 	expected, e := renderManagedUnit(s)
-	if e != nil {
-		return s, e
+	if e == nil && string(raw) == string(expected) {
+		return s, nil
 	}
-	if string(raw) != string(expected) {
-		return s, errors.New("服务单元已被修改，拒绝覆盖或操作")
+	// Keep exact old units recognizable so they can be uninstalled after an upgrade.
+	legacy, e := renderServiceUnit(s, true)
+	if e == nil && string(raw) == string(legacy) {
+		return s, nil
 	}
-	return s, nil
+	return s, errors.New("服务单元已被修改，拒绝覆盖或操作")
 }
