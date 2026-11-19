@@ -30,7 +30,7 @@ func validateInventory(items []HookInfo) (map[string]HookInfo, bool) {
 	}
 	result := make(map[string]HookInfo, len(items))
 	for _, item := range items {
-		if !validName(item.ID) || len(item.Methods) > 16 || len(item.IPRequired) > 16 || len(item.AllowIPs) > 64 || len(item.DenyIPs) > 64 || (len(item.AllowIPs) > 0 && len(item.DenyIPs) > 0) {
+		if !ValidHookID(item.ID) || len(item.Methods) > 16 || len(item.IPRequired) > 16 || len(item.AllowIPs) > 64 || len(item.DenyIPs) > 64 || (len(item.AllowIPs) > 0 && len(item.DenyIPs) > 0) {
 			return nil, false
 		}
 		if _, exists := result[item.ID]; exists {
@@ -62,11 +62,23 @@ func validateInventory(items []HookInfo) (map[string]HookInfo, bool) {
 }
 
 func (h *Hub) Routes() []HookRoute {
-	routes := make([]HookRoute, 0, len(h.routes))
+	routes := make([]HookRoute, 0, len(h.routes)+len(h.prefixRoutes))
 	for _, route := range h.routes {
 		routes = append(routes, route)
 	}
-	return routes
+	return append(routes, h.prefixRoutes...)
+}
+
+func (h *Hub) matchHook(path string) (HookRoute, string, bool) {
+	if route, ok := h.routes[path]; ok {
+		return route, route.Hook, true
+	}
+	for _, route := range h.prefixRoutes {
+		if id, ok := strings.CutPrefix(path, route.Prefix+"/"); ok {
+			return route, id, ValidHookID(id) && (route.Hooks == nil || contains(route.Hooks, id))
+		}
+	}
+	return HookRoute{}, "", false
 }
 
 func includesIP(networks []*net.IPNet, ip net.IP) bool {
@@ -105,7 +117,7 @@ func (h *Hub) ServeHook(w http.ResponseWriter, r *http.Request, origin RequestOr
 	_ = controller.SetWriteDeadline(deadline.Add(time.Second))
 	defer controller.SetReadDeadline(time.Time{})
 	defer controller.SetWriteDeadline(time.Time{})
-	route, exists := h.routes[r.URL.Path]
+	route, hookID, exists := h.matchHook(r.URL.Path)
 	if !exists {
 		http.NotFound(w, r)
 		return
@@ -115,22 +127,23 @@ func (h *Hub) ServeHook(w http.ResponseWriter, r *http.Request, origin RequestOr
 		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
-	type candidate struct {
-		id string
+	var eligible []string
+	online, methodDenied, ipDenied := false, false, false
+	targets := route.targets
+	if targets == nil {
+		targets = route.Agents
 	}
-	var eligible []candidate
-	available, methodDenied, ipDenied := false, false, false
 	h.mu.Lock()
-	for _, id := range route.Agents {
+	for _, id := range targets {
 		control := h.controls[id]
 		if control == nil || !control.services["webhook"] {
 			continue
 		}
-		info, hasHook := control.hooks[route.Hook]
+		online = true
+		info, hasHook := control.hooks[hookID]
 		if !hasHook {
 			continue
 		}
-		available = true
 		if len(info.Methods) != 0 && !contains(info.Methods, r.Method) {
 			methodDenied = true
 			continue
@@ -139,7 +152,7 @@ func (h *Hub) ServeHook(w http.ResponseWriter, r *http.Request, origin RequestOr
 			ipDenied = true
 			continue
 		}
-		eligible = append(eligible, candidate{id: id})
+		eligible = append(eligible, id)
 	}
 	h.mu.Unlock()
 	if len(eligible) == 0 {
@@ -148,12 +161,14 @@ func (h *Hub) ServeHook(w http.ResponseWriter, r *http.Request, origin RequestOr
 			http.Error(w, "access denied", http.StatusForbidden)
 		case methodDenied:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		case !available:
+		case route.Prefix != "" && online:
+			http.NotFound(w, r)
+		default:
 			http.Error(w, "hook unavailable", http.StatusServiceUnavailable)
 		}
 		return
 	}
-	selected := eligible[mathrand.Intn(len(eligible))].id
+	selected := eligible[mathrand.Intn(len(eligible))]
 	if maxBodySize > 0 {
 		if r.ContentLength > maxBodySize {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
@@ -161,7 +176,7 @@ func (h *Hub) ServeHook(w http.ResponseWriter, r *http.Request, origin RequestOr
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 	}
-	backendPath := h.nodes[selected].HookPrefix + "/" + route.Hook
+	backendPath := h.nodes[selected].HookPrefix + "/" + hookID
 	out := r.Clone(ctx)
 	out.URL.Scheme = "http"
 	out.URL.Host = "network.internal"
@@ -241,12 +256,16 @@ func (h *Hub) removeSession(id string, session *pendingSession) {
 }
 
 func (h *Hub) openPipe(ctx context.Context, targetID, service string, hops int) (net.Conn, error) {
+	return h.openControlPipe(ctx, targetID, service, hops, nil)
+}
+
+func (h *Hub) openControlPipe(ctx context.Context, targetID, service string, hops int, expected *controlConn) (net.Conn, error) {
 	if hops < 1 {
 		return nil, errors.New("network relay hop limit reached")
 	}
 	h.mu.Lock()
 	control := h.controls[targetID]
-	if h.closed || control == nil || !control.services[service] || len(h.sessions) >= h.max {
+	if h.closed || control == nil || (expected != nil && control != expected) || !control.services[service] || len(h.sessions) >= h.max {
 		h.mu.Unlock()
 		return nil, errors.New("target unavailable")
 	}
@@ -275,12 +294,12 @@ func (h *Hub) openPipe(ctx context.Context, targetID, service string, hops int) 
 	}
 	client, server := pipePair()
 	h.mu.Lock()
-	if h.closed || h.sessions[id] != session {
+	if h.closed || h.sessions[id] != session || (expected != nil && h.controls[targetID] != expected) {
 		h.mu.Unlock()
 		_ = client.Close()
 		_ = server.Close()
-		_ = target.Close()
-		return nil, errors.New("hub closed")
+		h.removeSession(id, session)
+		return nil, errors.New("target unavailable")
 	}
 	session.pipe = server
 	h.mu.Unlock()

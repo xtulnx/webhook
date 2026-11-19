@@ -28,7 +28,13 @@ func registerNetworkHookRoutes(r *mux.Router, hub *network.Hub) {
 		return
 	}
 	for _, route := range hub.Routes() {
-		r.Path(route.Path).HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		matcher := r.NewRoute()
+		if route.Prefix != "" {
+			matcher.PathPrefix(route.Prefix + "/")
+		} else {
+			matcher.Path(route.Path)
+		}
+		matcher.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			clientIP := extractIP(resolveRealIP(req))
 			if clientIP == nil {
 				http.Error(w, "invalid client IP", http.StatusForbidden)
@@ -39,30 +45,25 @@ func registerNetworkHookRoutes(r *mux.Router, hub *network.Hub) {
 	}
 }
 
-func validateNetworkRoutes(routes []network.HookRoute) error {
-	const reserved = "__webhook_network"
-	hooksPath := strings.Trim(*hooksURLPrefix, "/")
-	if hooksPath == "" || hooksPath == reserved || strings.HasPrefix(reserved, hooksPath+"/") || strings.HasPrefix(hooksPath, reserved+"/") {
-		return errors.New("urlprefix overlaps the reserved network route")
-	}
-	statusPath := strings.Trim(*statusURLPrefix, "/")
-	if statusPath == reserved || strings.HasPrefix(statusPath, reserved+"/") || strings.HasPrefix(reserved, statusPath+"/") {
-		return errors.New("status-path overlaps the reserved network route")
-	}
+func validateNetworkRoutes(cfg *network.HubConfig) error {
+	type appRoute struct{ name, path string }
+	hooksPath := "/" + strings.Trim(*hooksURLPrefix, "/")
+	statusPath := "/" + strings.Trim(*statusURLPrefix, "/")
+	appPaths := []appRoute{{"urlprefix", hooksPath}, {"status-path", statusPath}}
 	if *adminEnabled {
-		adminPath := strings.Trim(*adminURLPrefix, "/")
-		if adminPath == reserved || strings.HasPrefix(adminPath, reserved+"/") || strings.HasPrefix(reserved, adminPath+"/") {
-			return errors.New("admin-path overlaps the reserved network route")
-		}
+		appPaths = append(appPaths, appRoute{"admin-path", "/" + strings.Trim(*adminURLPrefix, "/")})
 	}
-	for _, route := range routes {
-		if route.Path == network.ControlPath || route.Path == network.DataPath || route.Path == "/"+statusPath {
-			return fmt.Errorf("hook route %q overlaps a reserved route", route.Path)
+	for _, appPath := range appPaths {
+		for _, reserved := range cfg.ReservedRoutes() {
+			if network.PathsOverlap(appPath.path, reserved) {
+				return fmt.Errorf("%s overlaps the reserved network route %q", appPath.name, reserved)
+			}
 		}
-		if *adminEnabled {
-			adminPath := "/" + strings.Trim(*adminURLPrefix, "/")
-			if route.Path == adminPath || strings.HasPrefix(route.Path, adminPath+"/") {
-				return fmt.Errorf("hook route %q overlaps admin-path", route.Path)
+		for _, route := range cfg.Routes {
+			if route.Prefix != "" && network.PathsOverlap(route.Prefix, appPath.path) ||
+				route.Path == appPath.path && appPath.name == "status-path" ||
+				appPath.name == "admin-path" && (route.Path == appPath.path || strings.HasPrefix(route.Path, appPath.path+"/")) {
+				return fmt.Errorf("hook route %q overlaps %s", route.Mount(), appPath.name)
 			}
 		}
 	}

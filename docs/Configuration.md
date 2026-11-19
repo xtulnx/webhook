@@ -76,6 +76,6 @@ kill -HUP <PID>
 
 `GET /status`、`HEAD /status` 默认开放，无 Admin 会话要求；可通过 `status-path: health/webhook` 修改路径。该路径不能位于 hook 前缀内或与启用的 Admin 前缀重叠。
 
-响应包含 `version`、`startedAt`、`uptimeSeconds`、hooks 数量、文件名及 ID、最后加载时间、加载错误计数和 watcher 状态。它不返回命令或密钥。没有 hook 或有加载错误时 `status` 为 `degraded`，但 **HTTP 仍返回 200**；监控需要检查 JSON 字段。纯 Hub 没有 hook 时可能显示 degraded，这不是 Agent 在线状态检查。
+公开响应只有 `status`。没有 Hook 或有加载错误时，它是 `degraded`，HTTP 仍返回 200。纯 Hub 没有 Hook 时也可能显示 `degraded`。服务级 IP 黑白名单继续作用于该入口。
 
-服务级 IP 黑白名单也保护状态接口。状态会透露 Hook ID 与文件名，需要隐藏时在反向代理限制访问。组网节点状态使用 [Admin 组网 API](Admin.md)。
+版本、启动时间、Hook 数量和 ID、配置文件名、加载统计和监听状态迁入需登录的 `GET /admin/api/status`。依赖旧响应字段的监控应改用认证入口。组网节点状态使用 [Admin 组网 API](Admin.md)。

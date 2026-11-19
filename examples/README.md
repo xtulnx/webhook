@@ -41,7 +41,7 @@ curl -i -X POST 'http://127.0.0.1:9000/hooks/hello?env=dev'
 curl -i 'http://127.0.0.1:9000/hooks/hello?env=dev'
 # 405：不允许 GET
 curl http://127.0.0.1:9000/status
-# status=ok、hooks.count=1
+# {"status":"ok"}
 ```
 
 对应 [hooks.yaml](basic/hooks.yaml) 同时展示了 payload 点路径、url query、request method、header → 环境变量、固定参数、AND/value/regex 和自定义响应头。把 `env` 改为 `prod` 即使 token 正确也返回 403。
@@ -134,7 +134,7 @@ rm examples/hotreload/hooks/pong.yaml
 # 删除后请求 pong 返回 404
 ```
 
-文件事件异步处理，写入后短暂等待或重试请求。只有直接子文件会加载。可临时新增无效 JSON 文件观察 `/status` 的 `loadErrors` 与 `degraded`，之后删除该测试文件；无效候选不会覆盖已有有效配置。显式文件自动监听需 `-hotreload`，目录监听无需设置它。完整语义见[配置文档](../docs/Configuration.md)。
+文件事件异步处理，写入后短暂等待或重试请求。只有直接子文件会加载。可临时新增无效 JSON 文件观察 `/status` 的 `degraded`，之后删除该测试文件。加载错误数可在认证的 Admin 状态接口查看。无效候选不会覆盖已有有效配置。显式文件自动监听需 `-hotreload`，目录监听无需设置它。完整语义见[配置文档](../docs/Configuration.md)。
 
 ## Admin 在线编辑
 

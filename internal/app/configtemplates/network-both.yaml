@@ -1,6 +1,7 @@
 # 级联：本机既是下游 Hub，也是上游的 Agent。需分别准备两个不同令牌。
 mode: both
 hub:
+  # transport_prefix: /agent/v1  # 下游 Agent 使用此路径。
   request_timeout: 60s
   max_sessions: 128
   nodes:
@@ -15,6 +16,7 @@ hub:
       allow_ips: [127.0.0.1/32, "::1/128"]
 agent:
   server: ws://127.0.0.1:9000 # 上游 Hub；本机级联模板服务监听 9001，避免连到自身。
+  # transport_prefix: /agent/v1  # 与上游 Hub 一致。
   id: relay                  # 上游 Hub 必须授权 relay，允许发布 webhook。
   token_env: WEBHOOK_UPSTREAM_TOKEN # 上游单独令牌，不复用下游令牌。
   max_connections: 64

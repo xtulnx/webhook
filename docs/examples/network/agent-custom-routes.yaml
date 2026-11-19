@@ -1,0 +1,13 @@
+# 从此目录运行 webhook -c agent-custom-routes.yaml。
+nopanic: true
+template: true
+hooks: [./hooks-custom-routes.yaml]
+network:
+  mode: agent
+  agent:
+    server: wss://a.abc.com/team
+    transport_prefix: /agent/v1
+    id: a1
+    token_env: WEBHOOK_A1_TOKEN
+    with_webhook: true
+    webhook_only_via_hub: true

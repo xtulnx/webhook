@@ -1,0 +1,14 @@
+# Linux 示例。请为 WEBHOOK_DEMO_HOOK_TOKEN 设置独立的随机十六进制值。
+{{ if getenv "WEBHOOK_DEMO_HOOK_TOKEN" }}
+- id: dev/deploy/web
+  execute-command: /bin/true
+  response-message: accepted
+  http-methods: [POST]
+  trigger-rule:
+    match:
+      type: value
+      value: '{{ getenv "WEBHOOK_DEMO_HOOK_TOKEN" }}'
+      parameter: {source: header, name: X-Demo-Hook-Token}
+{{ else }}
+[]
+{{ end }}

@@ -203,11 +203,7 @@ func TestDocumentedExamples(t *testing.T) {
 	t.Run("status and ping", func(t *testing.T) {
 		request(t, "POST", "/hooks/ping", "", nil, nil, 200)
 		got := request(t, "GET", "/status", "", nil, nil, 200)
-		var status serviceStatusResponse
-		if err := json.Unmarshal([]byte(got), &status); err != nil {
-			t.Fatal(err)
-		}
-		if status.Status != "ok" || status.Hooks.Count != len(hooks) {
+		if strings.TrimSpace(got) != `{"status":"ok"}` {
 			t.Fatalf("unexpected status: %s", got)
 		}
 	})
@@ -215,9 +211,17 @@ func TestDocumentedExamples(t *testing.T) {
 
 func TestDocumentedNetworkConfigs(t *testing.T) {
 	t.Setenv("DEMO_NODE_TOKEN", strings.Repeat("a", 64))
-	for _, name := range []string{"hub", "agent", "agent-subpath"} {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join("../../examples/network", name+".yaml")
+	for _, name := range []string{"WEBHOOK_A1_TOKEN", "WEBHOOK_A2_TOKEN", "WEBHOOK_ALICE_TOKEN", "WEBHOOK_DEMO_HOOK_TOKEN"} {
+		t.Setenv(name, strings.Repeat("b", 64))
+	}
+	for _, path := range []string{
+		"../../examples/network/hub.yaml",
+		"../../examples/network/agent.yaml",
+		"../../examples/network/agent-subpath.yaml",
+		"../../docs/examples/network/hub-custom-routes.yaml",
+		"../../docs/examples/network/agent-custom-routes.yaml",
+	} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -236,6 +240,11 @@ func TestDocumentedNetworkConfigs(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+	var hooks hook.Hooks
+	err := hooks.LoadFromFile("../../docs/examples/network/hooks-custom-routes.yaml", true)
+	if err != nil || len(hooks) != 1 || hooks[0].ID != "dev/deploy/web" {
+		t.Fatalf("custom route hook example is invalid: %v", err)
 	}
 }
 

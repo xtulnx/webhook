@@ -2,6 +2,11 @@
 # 本文件不是 webhook --config 的顶层结构；完整服务配置请选择 global hub 组合。
 mode: hub
 hub:
+  # transport_prefix: /agent/v1  # 对端 Agent 须设同值；省略时为 /__webhook_network/v1。
+  # share_prefix: /s  # 下载入口与 transport_prefix 独立配置。
+  # share_public_url: https://hub.example.com/s  # Nginx 外部下载地址不同时指定。
+  # agent_groups:
+  #   release: [edge, "prod-*", "re:stage-[0-9]+"]
   request_timeout: 60s
   max_sessions: 128
   nodes:
@@ -12,6 +17,7 @@ hub:
       services: [webhook]  # 允许发布的服务名称，不会自动替远端配置服务。
       hook_prefix: /hooks
       # allow: [other/ssh] # 本节点可以访问的节点/普通服务；webhook 不得放入 allow。
+      # allow_share_links: true # CLI 临时下载链接，启用时 services 须包含 files。
     # 普通 TCP 转发示例：要使用时同时启用对应节点及其 Agent 配置。
     # - id: other
     #   token_env: WEBHOOK_OTHER_TOKEN
@@ -22,5 +28,9 @@ hub:
       agents: [edge]      # 多个 Agent 时按请求选择，不自动失败重试，避免重复执行。
       allow_ips: [127.0.0.1/32, "::1/128"] # 按实际入口来源调整；与 deny_ips 二选一。
       # deny_ips: [192.0.2.0/24]
+    # - prefix: /hooks_sub/    # 将剩余路径作为 Hook ID，支持 dev/deploy/web。
+    #   agents: ["*"]         # 精确名称、通配符或 re: 正则。
+    #   groups: [release]     # 可与 agents 合并选择。
+    #   hooks: [dev/deploy/web] # 可选白名单；省略则使用所选节点上报的全部 Hook。
 # Hub 做路由和预过滤，最终规则仍由 Agent 校验；信任 Hub，不提供端到端加密替代 TLS。
 # 修改网络配置/令牌目前需协调重启；Hook 热刷新不等于网络拓扑热更新。

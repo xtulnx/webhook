@@ -104,7 +104,7 @@ def run(temp):
         check(request(port, "/hooks/hello?env=dev")[0] == 403, "缺少 token 未拒绝")
         check(request(port, "/hooks/hello?env=dev", "GET")[0] == 405, "GET 未拒绝")
         status = json.loads(request(port, "/status", "GET")[1])
-        check(status["status"] == "ok" and status["hooks"]["count"] == 1, "状态不正确")
+        check(status == {"status": "ok"}, "公开状态不正确")
     print("通过：参数、环境、组合规则与状态")
 
     signed = copy_hooks(temp, "signature/hooks.yaml.tmpl")
@@ -161,6 +161,7 @@ def run(temp):
     admin_config.write_text(text, encoding="utf-8")
     with server(temp, "admin", ["-c", str(admin_config)]) as port:
         check(request(port, "/admin/api/config", "GET")[0] == 401, "未认证管理 API 未拒绝")
+        check(request(port, "/admin/api/status", "GET")[0] == 401, "未认证状态详情未拒绝")
         digest = hmac.new(secret, struct.pack(">Q", int(time.time()) // 30), hashlib.sha1).digest()
         offset = digest[-1] & 15
         code = (struct.unpack(">I", digest[offset:offset+4])[0] & 0x7fffffff) % 1000000
@@ -169,6 +170,8 @@ def run(temp):
         cookie = response_headers["Set-Cookie"].split(";", 1)[0]
         status, body, _ = request(port, "/admin/api/config", "GET", headers={"Cookie": cookie})
         check(status == 200 and len(json.loads(body)["files"]) == 1, "认证配置查询失败")
+        status, body, _ = request(port, "/admin/api/status", "GET", headers={"Cookie": cookie})
+        check(status == 200 and json.loads(body)["hooks"]["count"] == 1, "认证状态详情不正确")
         mutation = {"file": basic.as_posix(), "hook": {"id": "admin-demo", "execute-command": DEMO.as_posix(), "http-methods": ["POST"], "include-command-output-in-response": True, "pass-arguments-to-command": [{"source": "string", "name": "echo"}]}}
         check(request(port, "/admin/api/hooks", body=json.dumps(mutation).encode(), headers={"Cookie": cookie, "Content-Type": "application/json"})[0] == 201, "在线新增失败")
         check(request(port, "/hooks/admin-demo")[0] == 200, "在线新增未生效")

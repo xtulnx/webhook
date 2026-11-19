@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +27,7 @@ func runAgentCommand(args []string, stdout, stderr io.Writer) int {
 	setCommandHelp(flags, "使用 Hub 预先授权的节点标识和令牌临时加入组网，可选发布服务或建立本机转发。")
 	cfg := &network.AgentConfig{}
 	flags.StringVar(&cfg.Server, "server", "", "Hub 基础地址，需包含自定义反向代理路径前缀（如有）")
+	flags.StringVar(&cfg.TransportPrefix, "transport-prefix", "", "Hub 配置的组网前缀，默认 /__webhook_network/v1")
 	flags.StringVar(&cfg.ID, "id", "", "Hub 预先授权的节点标识")
 	flags.StringVar(&cfg.Token, "token", "", "直接指定节点令牌（会出现在进程参数中，建议使用 token-env 或 token-file）")
 	flags.StringVar(&cfg.TokenEnv, "token-env", "", "保存节点令牌的环境变量名称")
@@ -35,6 +35,12 @@ func runAgentCommand(args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&cfg.CAFile, "ca-file", "", "私有 CA 证书路径（可选）")
 	flags.IntVar(&cfg.MaxConnections, "max-connections", 8, "最大并发隧道数")
 	lifetime := flags.Duration("duration", time.Hour, "到达指定时长后退出，必须大于 0（例如 30m、1h）")
+	connect := flags.String("connect", "", "通过标准输入输出连接已授权的 节点/服务，不监听本地端口")
+	shareLink := flags.Bool("share-link", false, "为每个 --share 输出临时下载链接，需要 Hub 为本节点启用 allow_share_links")
+	shareIndex := flags.Bool("share-index", false, "允许浏览已共享目录的只读索引")
+	shareUser := flags.String("share-basic-user", "", "临时文件分享的 Basic Auth 用户名")
+	sharePassword := flags.String("share-basic-password", "", "临时文件分享的 Basic Auth 密码（会出现在进程参数中）")
+	shareAuthFile := flags.String("share-basic-auth-file", "", "从本地文件读取一行 Basic Auth 凭证，格式为 用户名:密码")
 	var shares, publishes, forwards agentValues
 	flags.Var(&shares, "share", "共享只读文件或目录，格式为 URL名称=本地路径，可重复指定；服务名为 files")
 	flags.Var(&publishes, "publish", "发布 TCP 服务，格式为 服务名=主机:端口，可重复指定")
@@ -49,9 +55,21 @@ func runAgentCommand(args []string, stdout, stderr io.Writer) int {
 	if flags.NArg() != 0 || *lifetime <= 0 {
 		return fail(errors.New("unexpected arguments or invalid duration"))
 	}
+	if len(shares) == 0 && (*shareLink || *shareIndex || *shareUser != "" || *sharePassword != "" || *shareAuthFile != "") {
+		return fail(errors.New("share options require at least one --share"))
+	}
+	if *connect != "" && len(shares)+len(publishes)+len(forwards) != 0 {
+		return fail(errors.New("connect cannot be combined with share, publish, or forward"))
+	}
 	handlers := map[string]http.Handler{}
+	var shareAuth *shareBasicAuth
 	if len(shares) > 0 {
-		handler, err := newShareHandler(shares)
+		var err error
+		shareAuth, err = loadShareBasicAuth(*shareUser, *sharePassword, *shareAuthFile)
+		if err != nil {
+			return fail(err)
+		}
+		handler, err := newShareHandler(shares, *shareIndex, shareAuth)
 		if err != nil {
 			return fail(err)
 		}
@@ -79,88 +97,32 @@ func runAgentCommand(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, *lifetime)
 	defer cancel()
+	if *connect != "" {
+		if err := network.Connect(ctx, cfg, *connect, os.Stdin, stdout); err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		return 0
+	}
+	options := network.AgentOptions{Handlers: handlers, Version: version, Temporary: true, ExpiresAt: agentExpiry(ctx)}
+	if *shareLink {
+		options.ShareBasic = shareAuth != nil
+		for _, value := range shares {
+			name, _, _ := strings.Cut(value, "=")
+			options.ShareNames = append(options.ShareNames, name)
+		}
+		options.OnShareReady = func(links []string) {
+			for _, link := range links {
+				fmt.Fprintln(stdout, link)
+			}
+		}
+	}
 	fmt.Fprintf(stdout, "temporary agent %s; lifetime %s; hub authorization required\n", cfg.ID, *lifetime)
-	if err := network.RunAgent(ctx, cfg, network.AgentOptions{Handlers: handlers, Version: version, Temporary: true, ExpiresAt: agentExpiry(ctx)}); err != nil {
+	if err := network.RunAgent(ctx, cfg, options); err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
 	return 0
-}
-
-// Only explicitly selected roots are served. No writes, listings, or symlinks.
-func newShareHandler(values []string) (http.Handler, error) {
-	type share struct {
-		path string
-		dir  bool
-	}
-	roots := map[string]share{}
-	for _, value := range values {
-		name, path, ok := strings.Cut(value, "=")
-		if !ok || !network.ValidHookID(name) {
-			return nil, errors.New("share requires a simple URL-name=path")
-		}
-		if _, exists := roots[name]; exists {
-			return nil, errors.New("duplicate share name")
-		}
-		path, err := filepath.Abs(path)
-		if err != nil {
-			return nil, err
-		}
-		path, err = filepath.EvalSymlinks(path)
-		if err != nil {
-			return nil, err
-		}
-		info, err := os.Stat(path)
-		if err != nil {
-			return nil, err
-		}
-		if !info.IsDir() && !info.Mode().IsRegular() {
-			return nil, errors.New("share must be a regular file or directory")
-		}
-		roots[name] = share{path, info.IsDir()}
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, "method not allowed", 405)
-			return
-		}
-		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-		root, ok := roots[parts[0]]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		path := root.path
-		if !root.dir && len(parts) != 1 {
-			http.NotFound(w, r)
-			return
-		}
-		for _, part := range parts[1:] {
-			if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "\\\x00:") {
-				http.NotFound(w, r)
-				return
-			}
-			path = filepath.Join(path, part)
-			info, err := os.Lstat(path)
-			if err != nil || info.Mode()&os.ModeSymlink != 0 {
-				http.NotFound(w, r)
-				return
-			}
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		defer file.Close()
-		info, err := file.Stat()
-		if err != nil || !info.Mode().IsRegular() {
-			http.NotFound(w, r)
-			return
-		}
-		http.ServeContent(w, r, info.Name(), info.ModTime(), file)
-	}), nil
 }
 
 func agentExpiry(ctx context.Context) *time.Time {

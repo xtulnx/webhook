@@ -293,7 +293,18 @@ func TestStatusHandlerReportsHooksWithoutSensitiveConfiguration(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 	statusHandler(rec, req)
+	if rec.Code != http.StatusOK || rec.Body.String() != "{\"status\":\"ok\"}\n" || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("unexpected public status: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	statusHandler(rec, httptest.NewRequest(http.MethodHead, "/status", nil))
+	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+		t.Fatalf("unexpected public HEAD status: %d %s", rec.Code, rec.Body.String())
+	}
 
+	req = httptest.NewRequest(http.MethodGet, "/admin/api/status", nil)
+	rec = httptest.NewRecorder()
+	adminStatusHandler(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status code = %d, want 200", rec.Code)
 	}

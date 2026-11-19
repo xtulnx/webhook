@@ -45,6 +45,7 @@ cp examples/basic/hooks.yaml build/admin-hooks.yaml
 | POST | `/admin/api/auth/login` | body 为 `{"code":"123456"}`；成功设置会话 cookie，返回 `{"ok":true}` |
 | POST | `/admin/api/auth/logout` | 清除 cookie |
 | GET | `/admin/api/config` | 文件路径、格式、可写标记、hooks、全局只读原因 |
+| GET / HEAD | `/admin/api/status` | 认证后读取版本、Hook 清单、加载统计和监听状态 |
 | POST | `/admin/api/hooks` | 新增；`{"file":"已加载的绝对路径","hook":{...}}` |
 | PUT | `/admin/api/hooks` | 修改；另传 `currentId` 表示原 Hook ID |
 | DELETE | `/admin/api/hooks` | 删除；`{"file":"已加载的绝对路径","currentId":"hello"}` |

@@ -63,7 +63,7 @@ curl -i 'http://127.0.0.1:9000/hooks/hello?env=dev' \
 curl http://127.0.0.1:9000/status
 ```
 
-应看到 `status: "ok"` 和 `hooks.count: 1`。按 Ctrl+C 停止服务。
+应看到 `{"status":"ok"}`。按 Ctrl+C 停止服务。
 
 ## Windows PowerShell
 

@@ -16,7 +16,7 @@
 | `-port` | 9000 | 监听端口 |
 | `-socket` | 空 | Unix socket 或 Windows named pipe；优先于 IP/port |
 | `-urlprefix` | hooks | Hook URL 前缀 |
-| `-status-path` | status | 状态接口路径，仅 GET/HEAD |
+| `-status-path` | status | 状态接口路径，仅 GET/HEAD，公开 JSON 只含 `status` |
 | `-nopanic` | false | 无法加载 hooks 时允许非 verbose 服务继续运行 |
 | `-pidfile` | 空 | 写 PID 文件 |
 | `-setuid` / `-setgid` | 0 | Unix 打开监听端口后降权，需同时设置，不可配 socket；Windows 不支持 |
@@ -43,7 +43,7 @@
 | `-cipher-suites` | 空（Go 默认） | 逗号分隔 TLS cipher 名称；不用于配置 TLS 1.3 套件 |
 | `-list-cipher-suites` | false | 列出支持的 TLS 套件后退出，可配 tls-min-version |
 
-白名单以外的来源会被拒绝；黑白名单保护普通 hooks、公开路由、状态和 Admin。组网控制/数据端点使用独立 Agent 认证，详见[组网指南](Network.md)。`max-body-size` 限制 Hook body，不是整个 HTTP 服务器每个 API 的统一 body 限额。
+黑白名单保护普通 Hook、Hub 的 Hook 路由、状态和 Admin。组网控制及数据端点使用 Agent 认证，下载入口使用分享凭证，详见[组网指南](Network.md)。`max-body-size` 限制 Hook 请求体。
 
 ## 日志与追踪
 
@@ -90,6 +90,6 @@
 | `update check` | `--repository`、`--version`、`--json` |
 | `update apply` | `--repository`、`--version`、`--target`、`--state-dir`、`--yes`、`--allow-unsigned` |
 | `update rollback` | `--target`、`--state-dir` |
-| `agent` | `--server`、`--id`、`--token`/`--token-env`/`--token-file`、`--ca-file`、`--duration`、`--max-connections`、可重复的 `--share`/`--publish`/`--forward` |
+| `agent` | `--server`、`--transport-prefix`、`--id`、`--token`/`--token-env`/`--token-file`、`--ca-file`、`--duration`、`--max-connections`、`--connect`、可重复的 `--share`/`--publish`/`--forward`、`--share-link`、`--share-index`、`--share-basic-user` 和 `--share-basic-password` 或 `--share-basic-auth-file` |
 
 临时 Agent 默认 duration=1h、max-connections=8，令牌三选一；正式 YAML Agent 默认 max_connections=64。更新子命令默认仓库为 xtulnx/webhook，apply/rollback 状态目录默认当前工作目录，target 默认当前可执行文件。使用说明和权限约束分别见[运维](Operations.md)、[组网](Network.md)。

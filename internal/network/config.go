@@ -12,13 +12,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v2"
 )
 
 const (
-	ControlPath = "/__webhook_network/v1/control"
-	DataPath    = "/__webhook_network/v1/data"
+	DefaultTransportPrefix = "/__webhook_network/v1"
+	ControlPath            = DefaultTransportPrefix + "/control"
+	DataPath               = DefaultTransportPrefix + "/data"
 )
 
 var namePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -30,35 +32,45 @@ type Config struct {
 }
 
 type HubConfig struct {
-	RequestTimeout time.Duration `yaml:"request_timeout"`
-	Nodes          []NodePolicy  `yaml:"nodes"`
-	MaxSessions    int           `yaml:"max_sessions"`
-	Routes         []HookRoute   `yaml:"hook_routes"`
+	TransportPrefix string              `yaml:"transport_prefix"`
+	SharePrefix     string              `yaml:"share_prefix"`
+	SharePublicURL  string              `yaml:"share_public_url"`
+	AgentGroups     map[string][]string `yaml:"agent_groups"`
+	RequestTimeout  time.Duration       `yaml:"request_timeout"`
+	Nodes           []NodePolicy        `yaml:"nodes"`
+	MaxSessions     int                 `yaml:"max_sessions"`
+	Routes          []HookRoute         `yaml:"hook_routes"`
 }
 
 type HookRoute struct {
 	Path      string   `yaml:"path"`
+	Prefix    string   `yaml:"prefix"`
 	Hook      string   `yaml:"hook"`
+	Hooks     []string `yaml:"hooks"`
 	Agents    []string `yaml:"agents"`
+	Groups    []string `yaml:"groups"`
 	AllowIPs  []string `yaml:"allow_ips"`
 	DenyIPs   []string `yaml:"deny_ips"`
 	allowNets []*net.IPNet
 	denyNets  []*net.IPNet
+	targets   []string
 }
 
 type NodePolicy struct {
-	ID         string   `yaml:"id"`
-	Token      string   `yaml:"token"`
-	TokenEnv   string   `yaml:"token_env"`
-	TokenFile  string   `yaml:"token_file"`
-	Services   []string `yaml:"services"`
-	Allow      []string `yaml:"allow"`
-	HookPrefix string   `yaml:"hook_prefix"`
-	tokenHash  [32]byte
+	ID              string   `yaml:"id"`
+	Token           string   `yaml:"token"`
+	TokenEnv        string   `yaml:"token_env"`
+	TokenFile       string   `yaml:"token_file"`
+	Services        []string `yaml:"services"`
+	Allow           []string `yaml:"allow"`
+	AllowShareLinks bool     `yaml:"allow_share_links"`
+	HookPrefix      string   `yaml:"hook_prefix"`
+	tokenHash       [32]byte
 }
 
 type AgentConfig struct {
 	Server            string    `yaml:"server"`
+	TransportPrefix   string    `yaml:"transport_prefix"`
 	ID                string    `yaml:"id"`
 	Token             string    `yaml:"token"`
 	TokenEnv          string    `yaml:"token_env"`
@@ -149,6 +161,29 @@ func ParseConfig(data []byte, base string) (*Config, error) {
 }
 
 func validateHub(cfg *HubConfig, base string) error {
+	var err error
+	cfg.TransportPrefix, err = normalizePrefix(cfg.TransportPrefix, DefaultTransportPrefix)
+	if err != nil {
+		return fmt.Errorf("transport_prefix: %w", err)
+	}
+	cfg.SharePrefix, err = normalizePrefix(cfg.SharePrefix, strings.TrimSuffix(SharePath, "/"))
+	if err != nil {
+		return fmt.Errorf("share_prefix: %w", err)
+	}
+	if PathsOverlap(cfg.SharePrefix, cfg.TransportPrefix+"/control") || PathsOverlap(cfg.SharePrefix, cfg.TransportPrefix+"/data") {
+		return errors.New("share_prefix overlaps the transport control or data path")
+	}
+	if cfg.SharePublicURL != "" {
+		u, err := url.Parse(cfg.SharePublicURL)
+		if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(cfg.SharePublicURL, "#") ||
+			(u.Scheme != "https" && (u.Scheme != "http" || !isLoopbackHost(u.Hostname()))) {
+			return errors.New("share_public_url must be an HTTPS base URL without credentials, query, or fragment (HTTP only on loopback)")
+		}
+		if !validPrefixPath(u.Path) {
+			return errors.New("share_public_url must include a valid download path")
+		}
+		cfg.SharePublicURL = strings.TrimRight(cfg.SharePublicURL, "/")
+	}
 	if len(cfg.Nodes) == 0 {
 		return errors.New("hub requires at least one node")
 	}
@@ -191,6 +226,9 @@ func validateHub(cfg *HubConfig, base string) error {
 			}
 			seen[service] = true
 		}
+		if n.AllowShareLinks && !seen["files"] {
+			return fmt.Errorf("node %q: allow_share_links requires the files service", n.ID)
+		}
 		nodes[n.ID] = n
 	}
 	for _, n := range cfg.Nodes {
@@ -206,37 +244,15 @@ func validateHub(cfg *HubConfig, base string) error {
 			seen[dest] = true
 		}
 	}
-	routes := make(map[string]bool)
-	for i := range cfg.Routes {
-		route := &cfg.Routes[i]
-		if !validRoutePath(route.Path) || !validName(route.Hook) || len(route.Agents) == 0 || routes[route.Path] {
-			return fmt.Errorf("invalid or duplicate hook route %q", route.Path)
-		}
-		routes[route.Path] = true
-		seen := make(map[string]bool)
-		for _, id := range route.Agents {
-			if seen[id] || nodes[id] == nil || !contains(nodes[id].Services, "webhook") {
-				return fmt.Errorf("hook route %q has invalid agent %q", route.Path, id)
-			}
-			seen[id] = true
-		}
-		if len(route.AllowIPs) > 0 && len(route.DenyIPs) > 0 {
-			return fmt.Errorf("hook route %q cannot use both allow_ips and deny_ips", route.Path)
-		}
-		var err error
-		route.allowNets, err = parseNetworks(route.AllowIPs)
-		if err != nil {
-			return fmt.Errorf("hook route %q allow_ips: %w", route.Path, err)
-		}
-		route.denyNets, err = parseNetworks(route.DenyIPs)
-		if err != nil {
-			return fmt.Errorf("hook route %q deny_ips: %w", route.Path, err)
-		}
-	}
-	return nil
+	return validateHookRoutes(cfg, nodes)
 }
 
 func validateAgent(cfg *AgentConfig, base string) error {
+	var err error
+	cfg.TransportPrefix, err = normalizePrefix(cfg.TransportPrefix, DefaultTransportPrefix)
+	if err != nil {
+		return fmt.Errorf("transport_prefix: %w", err)
+	}
 	if !validName(cfg.ID) {
 		return fmt.Errorf("invalid node id %q", cfg.ID)
 	}
@@ -324,7 +340,7 @@ func hubHasService(cfg *HubConfig, id, service string) bool {
 }
 
 func validRoutePath(path string) bool {
-	if !strings.HasPrefix(path, "/") || path == "/" || strings.ContainsAny(path, "?#{}\\") || strings.HasPrefix(path, "/__webhook_network/") {
+	if !strings.HasPrefix(path, "/") || path == "/" || strings.ContainsAny(path, "?#{}\\") || strings.IndexFunc(path, unicode.IsControl) >= 0 {
 		return false
 	}
 	for _, segment := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
@@ -392,7 +408,19 @@ func isLoopbackHost(host string) bool {
 
 func validName(s string) bool { return namePattern.MatchString(s) }
 
-func ValidHookID(s string) bool { return validName(s) }
+func ValidShareName(s string) bool { return validName(s) }
+
+func ValidHookID(s string) bool {
+	if strings.ContainsRune(s, '\\') || strings.IndexFunc(s, unicode.IsControl) >= 0 {
+		return false
+	}
+	for _, segment := range strings.Split(s, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
 
 func splitDestination(s string) (string, string, bool) {
 	parts := strings.Split(s, "/")

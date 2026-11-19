@@ -98,7 +98,7 @@ func bridgeTCP(tcp net.Conn, ws *websocket.Conn) {
 	go pingLoop(ws, stop)
 	up := make(chan error, 1)
 	go func() {
-		err := tcpToWebSocket(ws, tcp)
+		err := readerToWebSocket(ws, tcp)
 		if err != nil {
 			_ = tcp.Close()
 			_ = ws.Close()
@@ -113,10 +113,10 @@ func bridgeTCP(tcp net.Conn, ws *websocket.Conn) {
 	<-up
 }
 
-func tcpToWebSocket(ws *websocket.Conn, tcp net.Conn) error {
+func readerToWebSocket(ws *websocket.Conn, reader io.Reader) error {
 	buf := make([]byte, frameSize)
 	for {
-		n, err := tcp.Read(buf)
+		n, err := reader.Read(buf)
 		if n > 0 {
 			if writeErr := writeFrame(ws, websocket.BinaryMessage, buf[:n]); writeErr != nil {
 				return writeErr
@@ -132,6 +132,16 @@ func tcpToWebSocket(ws *websocket.Conn, tcp net.Conn) error {
 }
 
 func webSocketToTCP(tcp net.Conn, ws *websocket.Conn) error {
+	if err := webSocketToWriter(tcp, ws); err != nil {
+		return err
+	}
+	if closer, ok := tcp.(interface{ CloseWrite() error }); ok {
+		return closer.CloseWrite()
+	}
+	return tcp.Close()
+}
+
+func webSocketToWriter(writer io.Writer, ws *websocket.Conn) error {
 	for {
 		kind, data, err := ws.ReadMessage()
 		if err != nil {
@@ -141,16 +151,13 @@ func webSocketToTCP(tcp net.Conn, ws *websocket.Conn) error {
 			if string(data) != "FIN" {
 				return errInvalidFrame
 			}
-			if closer, ok := tcp.(interface{ CloseWrite() error }); ok {
-				return closer.CloseWrite()
-			}
-			return tcp.Close()
+			return nil
 		}
 		if kind != websocket.BinaryMessage {
 			return errInvalidFrame
 		}
 		for len(data) != 0 {
-			n, err := tcp.Write(data)
+			n, err := writer.Write(data)
 			if err != nil {
 				return err
 			}

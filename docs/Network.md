@@ -55,7 +55,7 @@ webhook -network-config hub.yaml -ip 0.0.0.0 -port 443 \
   -secure -cert fullchain.pem -key privkey.pem
 ```
 
-Hub 可以只运行组网功能，不需要 hook 文件。若 Hub 已运行 webhook，可以在现有 YAML 总配置中添加内嵌 `network:`，或用 `network-config: /path/to/hub.yaml` 引用独立文件，然后正常启动。组网端点固定为 `/__webhook_network/v1/control` 和 `/__webhook_network/v1/data`。
+Hub 可以只运行组网功能，不需要 hook 文件。若 Hub 已运行 webhook，可以在现有 YAML 总配置中添加内嵌 `network:`，或用 `network-config: /path/to/hub.yaml` 引用独立文件，然后正常启动。组网端点默认为 `/__webhook_network/v1/control` 和 `/__webhook_network/v1/data`。
 
 证书可由现有 Nginx/托管服务管理，或通过 [Let's Encrypt 的 ACME 客户端](https://letsencrypt.org/getting-started/)申请。若 Hub 直接提供 HTTPS，可按系统对应的 [Certbot 官方指南](https://certbot.eff.org/instructions?ws=other)安装，并在公网域名指向 Hub、80 端口可达时运行 `sudo certbot certonly --standalone -d hub.example.com`；不能开放 80 时可选择 DNS 验证。将生成的 `fullchain.pem` 和 `privkey.pem` 路径传给 `-cert`、`-key`；确保运行用户有读取权限，并在证书更新后重启 webhook 以加载新证书。已有 Nginx 时可按 [Nginx 的 Certbot 指南](https://certbot.eff.org/instructions?ws=nginx)运行 `sudo certbot --nginx -d hub.example.com` 并验证自动续期。若由 Nginx 终止 HTTPS，证书只配置在 Nginx，Hub 进程监听 `127.0.0.1:9000` 的普通 HTTP 即可；Agent 仍使用 `wss://hub.example.com`。完整反代配置见下文。
 
@@ -93,7 +93,36 @@ hook_routes:
     agents: [app-a, app-b]
 ```
 
-外部 `/deploy` 会转发到选中 Agent 的 `/hooks/internal-deploy`。因此目前无需额外的通配符、正则或任意 URL rewrite 配置；这类配置会增加路径歧义和绕过路由权限检查的风险。路径隐藏只减少内部 hook ID 的暴露，不能代替令牌、IP 规则或 hook 自身的鉴权。
+外部 `/deploy` 会转发到选中 Agent 的 `/hooks/internal-deploy`。外部调用者的认证由 Hook 自己的触发规则执行。
+
+### 批量转发与 Agent 分组
+
+在 `network.hub` 下配置：
+
+```yaml
+agent_groups:
+  release: [a1, "prod-*"]
+  staging: ["re:stage-[0-9]+"]
+
+hook_routes:
+  - prefix: /hooks_sub/
+    agents: ["*"]
+  - prefix: /hooks_a1_v1/
+    agents: [a1]
+  - prefix: /release/
+    groups: [release]
+    agents: ["canary-*"]
+    hooks: [dev/deploy/web, dev/rollback/web]
+  - path: /deploy-web
+    hook: dev/deploy/web
+    groups: [release]
+```
+
+`agents` 和组成员均可使用精确 ID、通配符（如 `prod-*`、`a?`）或带 `re:` 前缀的 Go 正则。正则匹配完整 Agent ID。`"*"` 选择全部获准发布 `webhook` 的节点。Hub 启动时取并集并去重。未知组、无效模式和没有匹配节点的选择器会报错。组参与 Hook 路由选择，普通 TCP 服务仍由 `allow` 授权。
+
+`path` 配合 `hook` 精确匹配单条入口。`prefix` 保留前缀之后的完整 Hook ID，例如 `/release/dev/deploy/web` 转给 Agent 的 `/hooks/dev/deploy/web`。Hook ID 可包含多级路径，不能包含空段、`.`、`..`、反斜杠或控制字符。精确路径优先，然后选最长前缀。命中后只按该规则的权限和候选节点处理。省略 `hooks` 会发布所选节点上报的全部 Hook，包括热更新新增的 Hook。只想公开指定 Hook 时明确列出 `hooks`。
+
+[自定义路由示例](examples/network/hub-custom-routes.yaml)使用 `a1`、`prod-a2` 和 `alice` 三个节点。启动 Hub 前设置 `WEBHOOK_A1_TOKEN`、`WEBHOOK_A2_TOKEN` 和 `WEBHOOK_ALICE_TOKEN` 为各自独立的随机令牌。启动 A1 时设置与 Hub 相同的 `WEBHOOK_A1_TOKEN`，以及用于示例 Hook 的 `WEBHOOK_DEMO_HOOK_TOKEN`。在示例文件所在目录使用 `webhook -c agent-custom-routes.yaml` 启动 A1。Nginx 和 A1 就绪后，请求 `curl -X POST -H "X-Demo-Hook-Token: $WEBHOOK_DEMO_HOOK_TOKEN" https://a.abc.com/hooks_a1_v1/dev/deploy/web`，预期返回 `accepted`。
 
 Agent 只上报 hook ID、允许的 HTTP 方法，以及可安全提前判断的 IP 规则；不会上报命令、签名密钥或请求匹配参数。Hub 还可在每条公开路由配置 `allow_ips` 或 `deny_ips`。Agent 使用热重载更新 hooks 后，约 2 秒内更新 Hub 清单；修改 Hub 的 `hook_routes` 则需要重启 Hub。Hub 只做预过滤，最终仍由 Agent 执行完整 hook 规则。对包含 OR/NOT 的 IP 条件，Hub 不会擅自提前拒绝请求。随机路由按请求选择节点，不保证会话粘性；请求已经发往节点后，不会自动重试另一个节点，以免重复执行 hook。
 
@@ -163,7 +192,7 @@ WebSocket 的 `Upgrade` 和 `Connection` 头需要显式转发，参见 [Nginx �
 - 将 Nginx 示例中外部入口的 `/wh1` 全部替换为 `/teams/project-a/hub`；去除部署前缀的 `proxy_pass` 后端路径保持原配置。
 - 若启用 Admin，将 `admin-path` 相应设置为 `teams/project-a/hub/admin`，并保留管理请求的完整 URI。
 
-Agent 从配置中读取完整基础地址，再追加控制或数据端点；Hub 内部端点不依赖外部部署前缀。业务路径同样可以通过 `hook_routes[].path` 自定义，`/ingress/` 也只是本套示例的分类约定。
+Agent 从基础地址追加控制或数据路径。Hub 的 `transport_prefix` 默认是 `/__webhook_network/v1`。自定义时同步设置 `network.agent.transport_prefix` 或临时命令的 `--transport-prefix`。例如 Agent 使用 `--server wss://a.abc.com/team --transport-prefix /agent/v1`，对外访问 `/team/agent/v1/control` 和 `/team/agent/v1/data`。Nginx 去掉 `/team`，保留 Agent 签名的 `/agent/v1/...` 路径。业务入口由 `hook_routes[].path` 或 `prefix` 设置。
 
 Hub 挂在 `/wh1/` 下时，Agent 的 `server`（CLI 中的 `--server`）填写**包含部署前缀的 WebSocket 基础地址**，不要填写完整的 control 或 data 端点：
 
@@ -185,12 +214,13 @@ webhook agent --server wss://hub.example.com/wh1/ --id temp \
   --token-env WEBHOOK_TEMP_TOKEN --duration 30m
 ```
 
-建议按用途规划路径。`/wh1` 是 Nginx 部署前缀；组网端点固定；业务路径由 `hook_routes` 决定。现有 `/deploy` 等业务路径仍可使用，只需在 Nginx 配置对应入口。总配置示例统一将业务入口放在 `/ingress/` 下：
+下表展示默认组网和下载路径，以及 `/wh1` 部署前缀。业务路径由 `hook_routes` 决定，Nginx 需转发对应入口。
 
 | 分类 | 外部路径 | Hub 收到的路径 | 用途与认证 |
 | --- | --- | --- | --- |
 | 组网控制 | `/wh1/__webhook_network/v1/control` | `/__webhook_network/v1/control` | Agent 注册、清单、心跳；节点 HMAC 双向验证 |
 | 组网数据 | `/wh1/__webhook_network/v1/data` | `/__webhook_network/v1/data` | 每次转发的数据通道；节点 HMAC 和会话权限 |
+| 文件下载 | `/wh1/__webhook_network/v1/share/...` | `/__webhook_network/v1/share/...` | 可选临时分享；通过 URL 凭证授权 |
 | 业务 Hook | `/wh1/ingress/deploy` | `/ingress/deploy` | Hub 路由到 Agent 的 `/hooks/deploy`；执行 Hook 自身触发规则 |
 | 管理 | `/wh1/admin/`、`/wh1/admin/api/*`、`/wh1/admin/assets/*` | 保留完整 `/wh1/admin/...` | 可选 Admin UI/API/资源；API 使用 TOTP 登录后的 JWT 会话 |
 | 服务状态 | `/wh1/status`、`/wh1/` | `/status`、`/` | 状态 JSON 和已有的 `OK` 探针，不代表 Agent 已全部在线 |
@@ -211,7 +241,7 @@ location /wh1/ingress/ {
 
 管理路径需要单独处理：启用 Admin 时将 Hub 的 `admin-path` 设置为 `wh1/admin`，并像完整 Nginx 示例那样对 `/wh1/admin` 和 `/wh1/admin/` 使用**不带 URI 的** `proxy_pass http://127.0.0.1:9000;`，保留完整请求路径。这样 HTML 中的资源地址、前端 API 基础地址以及会话 Cookie Path 都一致；只剥掉前缀转发到默认 `/admin` 会导致这些地址不匹配。示例仅设置 `admin-path`，不会自动启用 Admin，启用步骤见 [Admin 文档](Admin.md)。
 
-Go 中的注册入口集中在 `internal/app/routes.go`，分别注册服务、管理和业务路由；`internal/app/network_routes.go` 负责组网传输分发、Hub 业务路由与冲突检查。组网传输保持独立的节点认证，不经过 HTTP IP 黑白名单；业务、管理和状态路由保留原有 HTTP 中间件。Agent 的 `server` 前缀只用于它主动连接 Hub，不会修改这些内部路由。
+Go 中的注册入口集中在 `internal/app/routes.go`。`internal/app/network_routes.go` 负责组网、下载分发和冲突检查。组网控制、数据和下载路由在应用 HTTP IP 黑白名单之外，可分别在 Nginx 限制来源。业务、管理和状态路由保留应用 HTTP 中间件。自定义路径示例见 [Hub 配置](examples/network/hub-custom-routes.yaml)、[Agent 配置](examples/network/agent-custom-routes.yaml) 和 [Nginx 配置](examples/network/nginx-custom-routes.conf)。
 
 从零运行含 Nginx 的回环演示见[本机子路径演示](../examples/README.md#nginx-子路径下的-hubagent)。
 
@@ -293,7 +323,60 @@ curl http://127.0.0.1:19000/dist/another.war
 
 Hub 配置示例见 [hub-temporary.yaml](examples/network/hub-temporary.yaml)。Hub 为 `temp` 配置 `services: [files, ssh]`（只保留实际需要的服务），为 `ops` 配置 `allow: [temp/files]`；需要 SSH 时再添加 `temp/ssh` 并建立对应 `--forward`。每个节点的令牌不同，只有双方各自使用的令牌须与 Hub 相应条目一致。临时命令不读取主配置，可用 `webhook agent --help` 查看参数。
 
-文件入口仅支持 GET/HEAD、Range 下载；没有目录列表、上传或删除接口，目录下的符号链接不可访问。显式选择的根路径在启动时解析；请只共享由可信本地用户维护的目录，不能把它当作对抗恶意本地文件替换的文件系统沙箱。终端 URL 名称不能重复，目录文件按该 URL 名称挂载。文件和普通 TCP 服务只通过已有授权隧道访问，不增加公开 HTTP 路由或 Agent 之间的密码协商协议。
+文件入口支持 GET、HEAD 和 Range 下载。加 `--share-index` 可浏览所选共享目录里的文件和子目录，入口既可用于授权 TCP 隧道，也可用于 HTTPS 下载。目录下的符号链接不可访问。共享根路径在启动时解析，请共享由可信本地用户维护的目录。单独使用 `--share` 时，下载者通过已授权的 Agent 隧道取文件。
+
+### 通过 Hub 的 HTTPS 链接下载
+
+需要把链接直接发给团队成员时，在 Hub 上为允许签发链接的节点启用该能力：
+
+```yaml
+network:
+  mode: hub
+  hub:
+    nodes:
+      - id: alice
+        token_file: alice.token
+        services: [files]
+        allow_share_links: true
+      - id: bob
+        token_file: bob.token
+        services: [files]
+        allow_share_links: true
+```
+
+每个人用独立的节点 ID 和令牌。在 Alice 的电脑运行：
+
+```sh
+webhook agent --server wss://a.abc.com --id alice --token-file ./alice.token \
+  --duration 30m --share-link \
+  --share report=./report.pdf --share dist=./dist
+```
+
+Hub 确认注册后，命令为每个 `--share` 输出独立链接。单文件链接可直接下载。目录分享在链接末尾加具体文件名，例如 `/app.zip`。持有链接即可读取对应的文件或目录，凭证包含在 URL 中。Agent 离线期间或到期后无法下载。同一个进程重连后沿用原链接，重新启动会生成新链接。默认下载时限沿用 Hub 的 `request_timeout`，大文件按需调整，也可使用 Range 续传。
+
+所有链接共用现有 HTTPS 端口。Hub 的 `share_prefix` 独立于 `transport_prefix`，默认是 `/__webhook_network/v1/share`。CLI 默认将其接在 `--server` 的部署路径之后。若外部下载地址另有前缀，在 Hub 配置 `share_public_url`，例如 `https://a.abc.com/s`，并让 Nginx 把 `/s/` 映射到 Hub 的 `share_prefix`。下载路径应关闭访问日志和响应缓存，以免记录链接凭证或缓存已失效的下载。
+
+临时分享需要账号密码时，可以直接传参数并开启目录索引：
+
+```sh
+webhook agent --server wss://a.abc.com/team --transport-prefix /agent/v1 \
+  --id alice --token-file ./alice.token --duration 30m --share-link --share-index \
+  --share dist=./dist --share-basic-user team --share-basic-password "$SHARE_PASSWORD"
+```
+
+也可用 `--share-basic-auth-file ./download.auth` 代替两个参数，文件内容为一行 `用户名:密码`。参数中的密码会出现在进程参数中。Hub 转发下载请求的认证头，Agent 校验账号密码并发出 Basic Auth 挑战。下载凭证只在 Agent 配置，Nginx 和 Hub 仍可见经过的请求头。浏览器打开目录链接即可进入索引。账号密码对该次 Agent 进程中的所有共享项生效，包括经授权 TCP 隧道访问的文件。Agent 下线或分享过期后，旧链接失效。
+
+### 通过 Hub 连接普通 TCP 服务
+
+`--connect 节点/服务` 从标准输入输出连接目标。可以在 Hub 所在主机执行，也可以从其他机器用自己的 Agent 身份执行。命令使用现有 HTTPS/WSS 入口，Hub 通过该身份的 `allow` 检查目标，调用方无需另开监听端口或事先运行常驻 Agent。
+
+例如 Hub 为 `ops` 配置 `allow: [server/ssh]`，且 `server` Agent 已发布 `ssh` 服务：
+
+```sh
+ssh -o 'ProxyCommand=webhook agent --server wss://a.abc.com --id ops --token-file /path/to/ops.token --duration 2h --connect server/ssh' your-user@server
+```
+
+每次调用建立一条连接，目标服务继续使用自己的协议认证。需要给浏览器或其他只接受代理地址的应用配置固定的本地 TCP 入口时，仍可使用 `--forward`。
 
 ## 通过 CLI 临时加入 Hub
 
@@ -327,6 +410,6 @@ curl -b admin.cookies https://hub.example.com/admin/api/network/nodes/temp
 
 响应节点字段包含 `id`、`status`（`online`、`offline`、`never_connected`）、`version`、`os`、`arch`、`temporary`、`expires_at`、连接/断线/最近活动时间、当前发布的 `services`、`hook_ids` 和 `active_sessions`。列表另包含 `generated_at`、`hub_version`、`active_sessions`、`max_sessions`。没有发布服务或 hook 时返回空数组。离线节点保留最后上报的版本与连接时间，当前服务清单为空；状态历史仅存内存，Hub 重启后重新开始记录。
 
-在线状态由 Hub 的控制连接判断，静默断线最多约 65 秒后被发现，`last_seen_at` 由有效控制消息或心跳 pong 更新，不代表业务 hook 健康。版本、系统和临时有效期是认证节点自报的信息，不是可信的软件证明；旧节点未上报版本时显示 `unknown`。临时期限由 CLI 自行退出执行，Hub 不把自报期限当作授权策略。`peer_address` 是 Hub 直接看到的 TCP 对端，经过 Nginx 时可能是代理地址。级联只展示直连节点，不递归展示下层拓扑。
+在线状态由 Hub 的控制连接判断，静默断线最多约 65 秒后被发现，`last_seen_at` 由有效控制消息或心跳 pong 更新，不代表业务 hook 健康。版本、系统和临时有效期由认证节点上报；旧节点未上报版本时显示 `unknown`。临时期限由 CLI 执行，Hub 也用上报的到期时间限制该节点签发的下载链接。普通服务的访问权限由节点策略决定。`peer_address` 是 Hub 直接看到的 TCP 对端，经过 Nginx 时可能是代理地址。级联只展示直连节点，不递归展示下层拓扑。
 
 接口不返回令牌、令牌环境变量名、令牌文件路径或本地服务目标地址。管理信息带 `Cache-Control: no-store`；已有公网 `/status` 不增加节点管理信息。

@@ -1,0 +1,37 @@
+# webhook -c hub-custom-routes.yaml
+# Nginx 与 webhook 通过宿主机回环通信。各节点使用独立令牌。
+ip: 127.0.0.1
+port: 9000
+real-ip-header: X-Real-IP
+trusted-proxies: 127.0.0.1
+network:
+  mode: hub
+  hub:
+    transport_prefix: /agent/v1
+    share_prefix: /downloads
+    share_public_url: https://a.abc.com/s
+    nodes:
+      - id: a1
+        token_env: WEBHOOK_A1_TOKEN
+        services: [webhook]
+      - id: prod-a2
+        token_env: WEBHOOK_A2_TOKEN
+        services: [webhook]
+      - id: alice
+        token_env: WEBHOOK_ALICE_TOKEN
+        services: [files]
+        allow_share_links: true
+    agent_groups:
+      release: [a1, "re:prod-a[0-9]+"]
+    hook_routes:
+      - prefix: /hooks_sub/
+        agents: ["*"]
+      - prefix: /hooks_a1_v1/
+        agents: [a1]
+      - prefix: /release/
+        agents: ["prod-*"]
+        groups: [release]
+        hooks: [dev/deploy/web]
+      - path: /deploy-web
+        hook: dev/deploy/web
+        groups: [release]

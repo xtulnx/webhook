@@ -269,14 +269,26 @@ func TestNetworkAgentWebhookOnlyViaHub(t *testing.T) {
 	}
 	hubConfig := `mode: hub
 hub:
+  transport_prefix: /agent/v1/
+  agent_groups:
+    release: ["re:ag(ent)"]
   nodes:
     - id: agent
       token_file: agent.token
       services: [webhook]
   hook_routes:
     - path: /public/deploy
-      hook: deploy
-      agents: [agent]
+      hook: dev/deploy/web
+      groups: [release]
+    - prefix: /hooks_sub/
+      agents: ["ag*"]
+      hooks: [dev/deploy/web]
+    - prefix: /hooks_sub/dev/
+      groups: [release]
+      hooks: [deploy/web]
+      deny_ips: [127.0.0.1]
+    - prefix: /release/
+      groups: [release]
 `
 	hubConfigPath := filepath.Join(dir, "hub.yaml")
 	if err := os.WriteFile(hubConfigPath, []byte(hubConfig), 0600); err != nil {
@@ -288,6 +300,7 @@ network:
   mode: agent
   agent:
     server: ws://%s
+    transport_prefix: /agent/v1
     id: agent
     token_file: agent.token
     with_webhook: true
@@ -297,7 +310,7 @@ network:
 	if err := os.WriteFile(agentConfigPath, []byte(agentConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
-	hooks := fmt.Sprintf(`[{"id":"deploy","execute-command":%q,"response-message":"started","http-methods":["POST"],"trigger-rule":{"and":[{"match":{"type":"ip-whitelist","ip-range":"127.0.0.1"}},{"match":{"type":"value","value":"127.0.0.1","parameter":{"source":"request","name":"remote-addr"}}}]}}]`, hookecho)
+	hooks := fmt.Sprintf(`[{"id":"dev/deploy/web","execute-command":%q,"response-message":"started","http-methods":["POST"],"trigger-rule":{"and":[{"match":{"type":"ip-whitelist","ip-range":"127.0.0.1"}},{"match":{"type":"value","value":"127.0.0.1","parameter":{"source":"request","name":"remote-addr"}}}]}}]`, hookecho)
 	if err := os.WriteFile(hooksPath, []byte(hooks), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -329,6 +342,25 @@ network:
 			t.Fatalf("hub did not route in-process hook: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	base := "http://" + net.JoinHostPort(hubHost, hubPort)
+	for _, test := range []struct {
+		path string
+		code int
+	}{
+		{"/release/dev/deploy/web", http.StatusOK},
+		{"/release/unknown/web", http.StatusNotFound},
+		{"/hooks_sub/dev/deploy/web", http.StatusForbidden},
+		{"/hooks_sub/outside/allowlist", http.StatusNotFound},
+	} {
+		res, err := http.Post(base+test.path, "text/plain", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != test.code {
+			t.Errorf("%s: status %d, want %d", test.path, res.StatusCode, test.code)
+		}
 	}
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(agentHost, agentPort), 200*time.Millisecond)
 	if err == nil {

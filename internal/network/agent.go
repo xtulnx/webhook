@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
@@ -34,7 +35,12 @@ type Agent struct {
 	webhook    http.Handler
 	handlers   map[string]http.Handler
 	info       AgentInfo
+	shareKey   []byte
+	shareBasic bool
+	shareReady func(string)
 }
+
+var errShareLinksDenied = errors.New("hub denied share links; enable allow_share_links for this node")
 
 type AgentOptions struct {
 	Version        string
@@ -44,6 +50,9 @@ type AgentOptions struct {
 	Downstream     *Hub
 	WebhookHandler http.Handler
 	Handlers       map[string]http.Handler
+	ShareNames     []string
+	ShareBasic     bool
+	OnShareReady   func([]string)
 }
 
 func RunAgent(ctx context.Context, cfg *AgentConfig, options ...AgentOptions) error {
@@ -59,6 +68,21 @@ func RunAgent(ctx context.Context, cfg *AgentConfig, options ...AgentOptions) er
 		a.info.Version = options[0].Version
 		a.info.Temporary = options[0].Temporary
 		a.info.ExpiresAt = options[0].ExpiresAt
+		if len(options[0].ShareNames) > 0 {
+			if !a.info.Temporary || a.info.ExpiresAt == nil || a.handlers["files"] == nil || !a.services["files"].InProcess {
+				return errors.New("share links require a temporary in-process files service")
+			}
+			a.shareKey = make([]byte, sha256.Size)
+			a.shareBasic = options[0].ShareBasic
+			if _, err := cryptorand.Read(a.shareKey); err != nil {
+				return fmt.Errorf("generate share key: %w", err)
+			}
+			if ready := options[0].OnShareReady; ready != nil {
+				a.shareReady = func(base string) {
+					ready(shareLinks(a.cfg.Server, base, a.cfg.ID, a.shareKey, a.shareBasic, options[0].ShareNames))
+				}
+			}
+		}
 	}
 	a.info.OS = runtime.GOOS
 	a.info.Arch = runtime.GOARCH
@@ -107,6 +131,9 @@ func RunAgent(ctx context.Context, cfg *AgentConfig, options ...AgentOptions) er
 	for ctx.Err() == nil {
 		connectedAt := time.Now()
 		err := a.control(ctx)
+		if errors.Is(err, errShareLinksDenied) {
+			return err
+		}
 		if time.Since(connectedAt) >= time.Minute {
 			backoff = time.Second
 		}
@@ -200,7 +227,7 @@ func (a *Agent) openWebSocket(ctx context.Context, path, role, destination, sess
 }
 
 func (a *Agent) control(ctx context.Context) error {
-	conn, err := a.openWebSocket(ctx, ControlPath, "", "", "")
+	conn, err := a.openWebSocket(ctx, transportPath(a.cfg.TransportPrefix, "/control"), "", "", "")
 	if err != nil {
 		return err
 	}
@@ -222,8 +249,27 @@ func (a *Agent) control(ctx context.Context) error {
 	if a.hooks != nil {
 		inventory = a.hooks()
 	}
-	if err := conn.WriteJSON(controlMessage{Info: &a.info, Type: "register", Services: services, Hooks: inventory}); err != nil {
+	if err := conn.WriteJSON(controlMessage{
+		Info: &a.info, Type: "register", Services: services, Hooks: inventory,
+		ShareKey:   base64.RawURLEncoding.EncodeToString(a.shareKey),
+		ShareBasic: a.shareBasic,
+	}); err != nil {
 		return err
+	}
+	conn.SetReadLimit(controlLimit)
+	if len(a.shareKey) > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(openTimeout))
+		var response controlMessage
+		if err := conn.ReadJSON(&response); err != nil {
+			return fmt.Errorf("hub did not acknowledge share links: %w", err)
+		}
+		if response.Type != "share_links_ready" || response.ShareBasic != a.shareBasic {
+			return errShareLinksDenied
+		}
+		if a.shareReady != nil {
+			a.shareReady(response.ShareBase)
+			a.shareReady = nil
+		}
 	}
 	if a.hooks != nil {
 		go func() {
@@ -250,7 +296,6 @@ func (a *Agent) control(ctx context.Context) error {
 		}()
 	}
 	log.Printf("network node %s connected to hub", a.cfg.ID)
-	conn.SetReadLimit(controlLimit)
 	_ = conn.SetReadDeadline(time.Now().Add(65 * time.Second))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(65 * time.Second))
@@ -314,7 +359,7 @@ func (a *Agent) accept(ctx context.Context, listener net.Listener, forward Forwa
 
 func (a *Agent) handleSource(ctx context.Context, conn net.Conn, destination string) {
 	defer conn.Close()
-	ws, err := a.openWebSocket(ctx, DataPath, "source", destination, "")
+	ws, err := a.openWebSocket(ctx, transportPath(a.cfg.TransportPrefix, "/data"), "source", destination, "")
 	if err != nil {
 		log.Printf("network forward %s failed: %v", destination, err)
 		return
@@ -346,7 +391,7 @@ func (a *Agent) handleTarget(ctx context.Context, session string, service Servic
 		return
 	}
 	defer conn.Close()
-	ws, err := a.openWebSocket(ctx, DataPath, "target", "", session)
+	ws, err := a.openWebSocket(ctx, transportPath(a.cfg.TransportPrefix, "/data"), "target", "", session)
 	if err != nil {
 		log.Printf("network target tunnel failed: %v", err)
 		return

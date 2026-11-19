@@ -10,6 +10,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,13 +34,16 @@ var upgrader = websocket.Upgrader{
 }
 
 type controlMessage struct {
-	Info     *AgentInfo `json:"info,omitempty"`
-	Type     string     `json:"type"`
-	Services []string   `json:"services,omitempty"`
-	Hooks    []HookInfo `json:"hooks,omitempty"`
-	Session  string     `json:"session,omitempty"`
-	Service  string     `json:"service,omitempty"`
-	Hops     int        `json:"hops,omitempty"`
+	Info       *AgentInfo `json:"info,omitempty"`
+	Type       string     `json:"type"`
+	Services   []string   `json:"services,omitempty"`
+	Hooks      []HookInfo `json:"hooks,omitempty"`
+	Session    string     `json:"session,omitempty"`
+	Service    string     `json:"service,omitempty"`
+	Hops       int        `json:"hops,omitempty"`
+	ShareKey   string     `json:"share_key,omitempty"`
+	ShareBasic bool       `json:"share_basic,omitempty"`
+	ShareBase  string     `json:"share_base,omitempty"`
 }
 
 // HookInfo contains only the metadata needed for early filtering at the hub.
@@ -52,15 +57,22 @@ type HookInfo struct {
 }
 
 type controlConn struct {
-	conn     *websocket.Conn
-	services map[string]bool
-	hooks    map[string]HookInfo
-	writeMu  sync.Mutex
+	conn        *websocket.Conn
+	services    map[string]bool
+	hooks       map[string]HookInfo
+	shareKey    []byte
+	shareBasic  bool
+	shareExpiry time.Time
+	writeMu     sync.Mutex
 }
 
 func (c *controlConn) write(message controlMessage) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	return c.writeLocked(message)
+}
+
+func (c *controlConn) writeLocked(message controlMessage) error {
 	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	return c.conn.WriteJSON(message)
 }
@@ -86,6 +98,11 @@ type Hub struct {
 	sessions       map[string]*pendingSession
 	max            int
 	routes         map[string]HookRoute
+	prefixRoutes   []HookRoute
+	controlPath    string
+	dataPath       string
+	sharePath      string
+	shareBase      string
 	closed         bool
 }
 
@@ -103,14 +120,31 @@ func NewHub(cfg *HubConfig) *Hub {
 		sessions:       make(map[string]*pendingSession),
 		max:            cfg.MaxSessions,
 		routes:         make(map[string]HookRoute),
+		controlPath:    transportPath(cfg.TransportPrefix, "/control"),
+		dataPath:       transportPath(cfg.TransportPrefix, "/data"),
+		sharePath:      SharePath,
+		shareBase:      cfg.SharePublicURL,
+	}
+	if cfg.SharePrefix != "" {
+		h.sharePath = cfg.SharePrefix + "/"
+	}
+	if h.shareBase == "" && h.sharePath != SharePath {
+		h.shareBase = cfg.SharePrefix
 	}
 	for _, n := range cfg.Nodes {
 		h.nodes[n.ID] = n
 		h.states[n.ID] = NodeStatus{ID: n.ID, Status: "never_connected", AgentInfo: AgentInfo{Version: "unknown"}}
 	}
 	for _, route := range cfg.Routes {
-		h.routes[route.Path] = route
+		if route.Prefix == "" {
+			h.routes[route.Path] = route
+		} else {
+			h.prefixRoutes = append(h.prefixRoutes, route)
+		}
 	}
+	sort.Slice(h.prefixRoutes, func(i, j int) bool {
+		return len(h.prefixRoutes[i].Prefix) > len(h.prefixRoutes[j].Prefix)
+	})
 	return h
 }
 
@@ -135,10 +169,14 @@ func (h *Hub) Close() {
 }
 
 func (h *Hub) Handles(path string) bool {
-	return path == ControlPath || path == DataPath
+	return path == h.controlPath || path == h.dataPath || strings.HasPrefix(path, h.sharePath)
 }
 
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, h.sharePath) {
+		h.serveShare(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -160,9 +198,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proof := http.Header{}
 	proof.Set(proofHeader, requestProof(h.nodes[node].tokenHash, "webhook-network-hub-proof-v1", nonce, r))
 	switch r.URL.Path {
-	case ControlPath:
+	case h.controlPath:
 		h.handleControl(w, r, node, proof)
-	case DataPath:
+	case h.dataPath:
 		switch r.Header.Get(roleHeader) {
 		case "source":
 			h.handleSource(w, r, node, proof)
@@ -232,9 +270,23 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 		}
 	}
 	control := &controlConn{conn: conn, services: services, hooks: hooks}
+	if register.ShareKey != "" {
+		key, err := base64.RawURLEncoding.DecodeString(register.ShareKey)
+		if err != nil || len(key) != sha256.Size || !h.nodes[id].AllowShareLinks || !services["files"] ||
+			!info.Temporary || info.ExpiresAt == nil || !time.Now().Before(*info.ExpiresAt) {
+			_ = control.write(controlMessage{Type: "share_links_denied"})
+			return
+		}
+		control.shareKey = key
+		control.shareBasic = register.ShareBasic
+		control.shareExpiry = *info.ExpiresAt
+	}
+	// Ensure the registration acknowledgement precedes any open message.
+	control.writeMu.Lock()
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
+		control.writeMu.Unlock()
 		return
 	}
 	old := h.controls[id]
@@ -242,6 +294,11 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 	now := time.Now().UTC()
 	h.states[id] = NodeStatus{ID: id, Status: "online", AgentInfo: info, ConnectedAt: &now, LastSeenAt: &now, PeerAddress: r.RemoteAddr}
 	h.mu.Unlock()
+	var ackErr error
+	if control.shareKey != nil {
+		ackErr = control.writeLocked(controlMessage{Type: "share_links_ready", ShareBase: h.shareBase, ShareBasic: control.shareBasic})
+	}
+	control.writeMu.Unlock()
 	if old != nil {
 		_ = old.conn.Close()
 	}
@@ -257,6 +314,9 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 		}
 		h.mu.Unlock()
 	}()
+	if ackErr != nil {
+		return
+	}
 	conn.SetPongHandler(func(string) error {
 		h.markSeen(id, control)
 		return conn.SetReadDeadline(time.Now().Add(65 * time.Second))

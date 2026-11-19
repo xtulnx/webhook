@@ -9,7 +9,7 @@ import (
 // serveWebhookInProcess connects a tunnel directly to the webhook handler.
 // No TCP or Unix listener is created on the agent host.
 func serveWebhookInProcess(handler http.Handler) net.Conn {
-	client, server := net.Pipe()
+	client, server := pipePair()
 	go func() {
 		listener := &oneConnListener{conn: loopbackConn{Conn: server}}
 		_ = (&http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}).Serve(listener)

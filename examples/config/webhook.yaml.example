@@ -86,7 +86,7 @@ nopanic: true
 # 默认 false
 hotreload: true
 
-# 服务状态接口路径，默认可通过 GET /status 查看运行时间、已加载 hook 和最近加载时间
+# 服务状态接口路径。公开 JSON 只含 status，详情在认证后的 Admin 状态接口。
 # status-path: status
 
 # Admin 默认从 xtulnx/webhook 检查更新，检查结果仅保存在本进程内存中。

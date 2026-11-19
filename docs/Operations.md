@@ -166,7 +166,7 @@ Admin 只提供认证后的状态和检查，不提供安装接口。`update-ena
 | 表现 | 检查方式 |
 | --- | --- |
 | 启动找不到 hooks | 分清总配置对象与 Hook 数组；检查工作目录和绝对路径；临时启用 verbose |
-| `/status` 是 degraded | 检查 hooks.count 和 loadErrors；加载失败会保留旧配置；纯 Hub 无 hook 也可能如此 |
+| `/status` 是 degraded | 在认证后的 `/admin/api/status` 检查 Hook 数量和加载错误数，或查看服务日志。加载失败时会保留旧配置。纯 Hub 无 Hook 时也可能如此。 |
 | HTTP 200 但没执行 | 规则不匹配默认 200，显式改成 403；查看规则日志 |
 | HTTP 500 | 同步命令退出、超时、签名/规则错误；用本机受控请求复现，谨慎启用输出回传 |
 | HTTP 503 | 当前 Hook 并发已满，或 Hub 没有可用路由节点；查看对应层日志 |

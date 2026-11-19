@@ -76,9 +76,23 @@ func registerStatusRoute(router *mux.Router) {
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
-	now := time.Now().UTC()
-	response := serviceStatusSnapshot(now)
+	loadedHooksMu.RLock()
+	count := 0
+	for _, path := range hooksFiles {
+		count += len(loadedHooksFromFiles[path])
+	}
+	status := serviceHealth(count, len(hookLoadFailures))
+	loadedHooksMu.RUnlock()
+	writeServiceStatus(w, r, struct {
+		Status string `json:"status"`
+	}{status})
+}
 
+func adminStatusHandler(w http.ResponseWriter, r *http.Request) {
+	writeServiceStatus(w, r, serviceStatusSnapshot(time.Now().UTC()))
+}
+
+func writeServiceStatus(w http.ResponseWriter, r *http.Request, response interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method == http.MethodHead {
@@ -91,6 +105,13 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	if err := encoder.Encode(response); err != nil {
 		http.Error(w, "failed to encode service status", http.StatusInternalServerError)
 	}
+}
+
+func serviceHealth(hooks, failures int) string {
+	if hooks == 0 || failures != 0 {
+		return "degraded"
+	}
+	return "ok"
 }
 
 func serviceStatusSnapshot(now time.Time) serviceStatusResponse {
@@ -133,12 +154,8 @@ func serviceStatusSnapshot(now time.Time) serviceStatusResponse {
 		hookFiles = append(hookFiles, fileStatus)
 	}
 
-	status := "ok"
-	if hookCount == 0 || failureCount != 0 {
-		status = "degraded"
-	}
 	result := serviceStatusResponse{
-		Status:        status,
+		Status:        serviceHealth(hookCount, failureCount),
 		Version:       version,
 		StartedAt:     serviceStartedAt.Format(time.RFC3339Nano),
 		UptimeSeconds: int64(now.Sub(serviceStartedAt).Seconds()),

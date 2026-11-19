@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -55,11 +56,11 @@ func TestRuntimeControlEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-	url := fmt.Sprintf("http://127.0.0.1:%d/status", port)
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	client := &http.Client{Timeout: time.Second}
 	ready := false
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		resp, e := client.Get(url)
+		resp, e := client.Get(base + "/status")
 		if e == nil {
 			resp.Body.Close()
 			ready = true
@@ -82,22 +83,23 @@ func TestRuntimeControlEndToEnd(t *testing.T) {
 	if result["runtimeConfirmed"] != true || result["reload"] != "applied" {
 		t.Fatalf("%s", raw)
 	}
-	status := func() map[string]interface{} {
+	assertHook := func(id, want string) {
 		t.Helper()
-		resp, e := client.Get(url)
+		resp, e := client.Get(base + "/hooks/" + id)
 		if e != nil {
 			t.Fatal(e)
 		}
 		defer resp.Body.Close()
-		var status map[string]interface{}
-		if e = json.NewDecoder(resp.Body).Decode(&status); e != nil {
+		body, e := io.ReadAll(resp.Body)
+		if e != nil {
 			t.Fatal(e)
 		}
-		return status
+		if resp.StatusCode != http.StatusOK || string(body) != want {
+			t.Fatalf("hook %s: %d %q, want 200 %q", id, resp.StatusCode, body, want)
+		}
 	}
-	if count := status()["hooks"].(map[string]interface{})["count"]; count != float64(2) {
-		t.Fatal("runtime not refreshed", count)
-	}
+	assertHook("old", "original")
+	assertHook("new", "added")
 	// A bad whole-file candidate must not remove the valid in-memory set.
 	valid, err := os.ReadFile(hooks)
 	if err != nil {
@@ -109,9 +111,8 @@ func TestRuntimeControlEndToEnd(t *testing.T) {
 	if out, e := run("hooks", "reload", "--config", cfg); e == nil {
 		t.Fatalf("bad candidate accepted %s", out)
 	}
-	if count := status()["hooks"].(map[string]interface{})["count"]; count != float64(2) {
-		t.Fatal("failed refresh changed runtime", count)
-	}
+	assertHook("old", "original")
+	assertHook("new", "added")
 	if err = os.WriteFile(hooks, valid, 0600); err != nil {
 		t.Fatal(err)
 	}

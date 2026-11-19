@@ -47,6 +47,7 @@ func TestHTTPRouteGroups(t *testing.T) {
 		{"/wh1/admin/", 200, `/wh1/admin/assets/app.js`},
 		{"/wh1/admin/assets/app.js", 200, ""},
 		{"/wh1/admin/api/network/nodes", 401, ""},
+		{"/wh1/admin/api/status", 401, ""},
 		{"/admin/", 404, ""},
 		{"/missing", 404, ""},
 	} {
@@ -77,6 +78,13 @@ func TestHTTPRouteGroups(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("prefixed management API: %d %s", w.Code, w.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/wh1/admin/api/status", nil)
+	req.AddCookie(cookie)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"hooks":`) {
+		t.Fatalf("authenticated status API: %d %s", w.Code, w.Body.String())
 	}
 
 	// HTTP IP restrictions continue to apply to all HTTP route groups, while

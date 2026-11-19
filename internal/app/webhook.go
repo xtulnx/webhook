@@ -367,7 +367,7 @@ func Main(buildVersion, manifestPublicKey string) {
 
 	var hub *network.Hub
 	if networkConfig != nil && networkConfig.Hub != nil {
-		if err := validateNetworkRoutes(networkConfig.Hub.Routes); err != nil {
+		if err := validateNetworkRoutes(networkConfig.Hub); err != nil {
 			log.Fatal(err)
 		}
 		hub = network.NewHub(networkConfig.Hub)
