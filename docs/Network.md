@@ -325,6 +325,8 @@ Hub 配置示例见 [hub-temporary.yaml](examples/network/hub-temporary.yaml)。
 
 文件入口支持 GET、HEAD 和 Range 下载。加 `--share-index` 可浏览所选共享目录里的文件和子目录，入口既可用于授权 TCP 隧道，也可用于 HTTPS 下载。目录下的符号链接不可访问。共享根路径在启动时解析，请共享由可信本地用户维护的目录。单独使用 `--share` 时，下载者通过已授权的 Agent 隧道取文件。
 
+开启目录索引后，点击 TXT、JSON、YAML、Properties 等文本文件，以及 PDF、PNG、JPEG、GIF、WebP、AVIF、BMP、ICO 等文件时，浏览器会优先预览，实际显示取决于浏览器的格式支持和设置。HTML、SVG、压缩包等文件作为附件下载。单独用 `--share 名称=文件路径` 发布的 HTTPS 文件链接仍直接下载。通过 Hub 使用预览需要更新 Hub 和 Agent。
+
 ### 通过 Hub 的 HTTPS 链接下载
 
 需要把链接直接发给团队成员时，在 Hub 上为允许签发链接的节点启用该能力：
@@ -352,9 +354,57 @@ webhook agent --server wss://a.abc.com --id alice --token-file ./alice.token \
   --share report=./report.pdf --share dist=./dist
 ```
 
-Hub 确认注册后，命令为每个 `--share` 输出独立链接。单文件链接可直接下载。目录分享在链接末尾加具体文件名，例如 `/app.zip`。持有链接即可读取对应的文件或目录，凭证包含在 URL 中。Agent 离线期间或到期后无法下载。同一个进程重连后沿用原链接，重新启动会生成新链接。默认下载时限沿用 Hub 的 `request_timeout`，大文件按需调整，也可使用 Range 续传。
+Hub 确认注册后，命令为每个 `--share` 输出一个链接，格式如下：
 
-所有链接共用现有 HTTPS 端口。Hub 的 `share_prefix` 独立于 `transport_prefix`，默认是 `/__webhook_network/v1/share`。CLI 默认将其接在 `--server` 的部署路径之后。若外部下载地址另有前缀，在 Hub 配置 `share_public_url`，例如 `https://a.abc.com/s`，并让 Nginx 把 `/s/` 映射到 Hub 的 `share_prefix`。下载路径应关闭访问日志和响应缓存，以免记录链接凭证或缓存已失效的下载。
+```text
+<下载基址>/<节点ID>[/<链接ID>]/<共享名>[/<目录内路径>]
+```
+
+| 地址组成 | 来源和用途 |
+| --- | --- |
+| 下载基址 | 优先使用 Hub 的 `share_public_url`，例如 `https://a.abc.com/wh/fs`。未设置时，以 `--server` 的主机、端口和部署前缀为基础，将 `wss` 转为 `https`（`ws` 转为 `http`），再接上 Hub 的 `share_prefix`。 |
+| 节点 ID | Agent 的 `--id`。Hub 在该节点的连接下验证链接 ID 并转发请求。 |
+| 链接 ID | 默认由 Agent 生成。未启用 Basic Auth 时，每个共享名有自己的随机访问凭证。启用 Basic Auth 时，本次进程的共享项使用同一个随机 ID，下载时还须验证账号密码。用 `--share-link-id` 指定该段，显式传空字符串时省略整段。 |
+| 共享名 | `--share 名称=本地路径` 中的名称。每次访问都需指定共享名。开启 `--share-index` 后，可在各共享目录内浏览索引。 |
+| 目录内路径 | 下载目录中的文件时，追加相对路径，例如 `/releases/app.zip`。路径中的空格等字符须进行 URL 编码，例如空格写成 `%20`。 |
+
+所有链接共用现有 HTTPS 端口。Hub 的 `share_prefix` 默认是 `/__webhook_network/v1/share`，可独立于 `transport_prefix` 配置。若设置了外部下载基址，例如 `https://a.abc.com/wh/fs`，反向代理须将 `/wh/fs/` 映射到 Hub 的 `share_prefix`，并保留后面的节点 ID、链接 ID、共享名和目录内路径。下载路径应关闭访问日志和响应缓存，以免记录链接凭证或缓存已失效的下载。
+
+### 自定义链接 ID
+
+```sh
+webhook agent --server wss://a.abc.com --id alice --token-file ./alice.token \
+  --share-link --share-link-id release-demo --share-index \
+  --share report=./report.pdf --share dist=./dist
+```
+
+若 `share_public_url` 为 `https://a.abc.com/wh/fs`，单文件链接为 `https://a.abc.com/wh/fs/alice/release-demo/report`，目录索引为 `https://a.abc.com/wh/fs/alice/release-demo/dist`，目录内的文件可通过 `https://a.abc.com/wh/fs/alice/release-demo/dist/app.zip` 下载。
+
+`--share-link-id` 须与 `--share-link` 一起使用。非空值只能是由英文字母、数字、下划线和连字符组成的单个路径段。它对本次进程的所有 `--share` 生效。不同节点可以使用相同的链接 ID，Hub 按节点 ID 隔离。Hub 和 Agent 都须使用支持此参数的版本，Hub 仍须授权该节点的 `files` 服务与 `allow_share_links`。
+
+显式传入 `--share-link-id ""`（也可写成 `--share-link-id=`）时，示例中的文件地址变为 `https://a.abc.com/wh/fs/alice/report`，目录索引地址变为 `https://a.abc.com/wh/fs/alice/dist`。省略这个参数时仍会生成随机 ID。
+
+未启用 Basic Auth 时，知道或猜到分享地址的访问者即可下载。使用空 ID 或易记的 ID 时，可搭配 Basic Auth。多个设备可以同时访问同一个下载地址，并发受 Agent 和 Hub 的连接数限制。下载时限由 Hub 的 `request_timeout` 控制，支持 Range 续传。
+
+### 同一节点 ID 并行分享
+
+更新 Hub 和 Agent 后，只发布临时文件分享的设备可以用同一节点 ID 和令牌并行注册。两台设备可各自运行下面的一条命令。链接 ID 分别为 `laptop` 和 `office`，共享名都为 `report`。
+
+```sh
+webhook agent --server wss://a.abc.com --id alice --token-file ./alice.token \
+  --share-link --share-link-id laptop --share report=./report.pdf
+
+webhook agent --server wss://a.abc.com --id alice --token-file ./alice.token \
+  --share-link --share-link-id office --share report=./report.pdf
+```
+
+若下载基址为 `https://a.abc.com/wh/fs`，在 `/alice/laptop/report` 下载笔记本上的文件，在 `/alice/office/report` 下载另一台设备上的文件。也可以省略 `--share-link-id` 自动生成。使用同一节点 ID 的设备共享该节点的授权身份。与 `--publish` 或 `--forward` 组合时走普通节点注册，其公网文件分享独占该节点的分享路径。旧版 Agent 的分享注册也独占该路径。
+
+- **冲突**。Hub 拒绝重复的链接 ID。显式传空 ID 时，该 Agent 独占此节点的公网分享路径。每个节点最多保留 32 个在线或待重连的分享注册。
+- **重连**。Hub 检测到断线后，为原进程保留链接 ID 最多一分钟，或保留至分享过期，以较早者为准。断线期间地址不可用。原进程重连后继续使用原链接，Hub 重启会清空这些内存预留。
+- **重启**。Agent 新进程会生成新的随机链接。旧预留释放后，新进程若复用同一个自定义链接 ID（包括空 ID）和共享名，旧 URL 会指向新进程发布的内容。
+
+### 为下载链接启用 Basic Auth
 
 临时分享需要账号密码时，可以直接传参数并开启目录索引：
 
@@ -364,7 +414,7 @@ webhook agent --server wss://a.abc.com/team --transport-prefix /agent/v1 \
   --share dist=./dist --share-basic-user team --share-basic-password "$SHARE_PASSWORD"
 ```
 
-也可用 `--share-basic-auth-file ./download.auth` 代替两个参数，文件内容为一行 `用户名:密码`。参数中的密码会出现在进程参数中。Hub 转发下载请求的认证头，Agent 校验账号密码并发出 Basic Auth 挑战。下载凭证只在 Agent 配置，Nginx 和 Hub 仍可见经过的请求头。浏览器打开目录链接即可进入索引。账号密码对该次 Agent 进程中的所有共享项生效，包括经授权 TCP 隧道访问的文件。Agent 下线或分享过期后，旧链接失效。
+也可用 `--share-basic-auth-file ./download.auth` 代替两个参数，文件内容为一行 `用户名:密码`。参数中的密码会出现在进程参数中。Hub 转发下载请求的认证头，Agent 校验账号密码并发出 Basic Auth 挑战。下载凭证只在 Agent 配置，Nginx 和 Hub 仍可见经过的请求头。浏览器打开目录链接可进入索引。账号密码对该次 Agent 进程中的所有共享项生效，包括经授权 TCP 隧道访问的文件。
 
 ### 通过 Hub 连接普通 TCP 服务
 
@@ -377,6 +427,8 @@ ssh -o 'ProxyCommand=webhook agent --server wss://a.abc.com --id ops --token-fil
 ```
 
 每次调用建立一条连接，目标服务继续使用自己的协议认证。需要给浏览器或其他只接受代理地址的应用配置固定的本地 TCP 入口时，仍可使用 `--forward`。
+
+多台设备可以用同一节点 ID 和令牌并发执行 `--connect`，各自建立数据连接并共享该身份的访问权限。普通 Agent 每个节点 ID 在 Hub 上保留一条控制连接，新注册会替换旧连接。临时文件分享可按链接 ID 并行注册。存在多个临时分享实例时，`节点/files` 无法选定目标实例，应使用各自的 HTTPS 分享链接。
 
 ## 通过 CLI 临时加入 Hub
 
@@ -411,5 +463,7 @@ curl -b admin.cookies https://hub.example.com/admin/api/network/nodes/temp
 响应节点字段包含 `id`、`status`（`online`、`offline`、`never_connected`）、`version`、`os`、`arch`、`temporary`、`expires_at`、连接/断线/最近活动时间、当前发布的 `services`、`hook_ids` 和 `active_sessions`。列表另包含 `generated_at`、`hub_version`、`active_sessions`、`max_sessions`。没有发布服务或 hook 时返回空数组。离线节点保留最后上报的版本与连接时间，当前服务清单为空；状态历史仅存内存，Hub 重启后重新开始记录。
 
 在线状态由 Hub 的控制连接判断，静默断线最多约 65 秒后被发现，`last_seen_at` 由有效控制消息或心跳 pong 更新，不代表业务 hook 健康。版本、系统和临时有效期由认证节点上报；旧节点未上报版本时显示 `unknown`。临时期限由 CLI 执行，Hub 也用上报的到期时间限制该节点签发的下载链接。普通服务的访问权限由节点策略决定。`peer_address` 是 Hub 直接看到的 TCP 对端，经过 Nginx 时可能是代理地址。级联只展示直连节点，不递归展示下层拓扑。
+
+并行分享时，节点状态按节点 ID 展示一条记录，`active_sessions` 汇总该节点的连接数。版本、活动时间等连接信息来自普通节点连接，或在只有分享连接时取其中一个在线实例。
 
 接口不返回令牌、令牌环境变量名、令牌文件路径或本地服务目标地址。管理信息带 `Cache-Control: no-store`；已有公网 `/status` 不增加节点管理信息。

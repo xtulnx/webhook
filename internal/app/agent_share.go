@@ -109,8 +109,16 @@ func newShareHandler(values []string, index bool, auth *shareBasicAuth) (http.Ha
 			http.NotFound(w, r)
 			return
 		}
-		if r.Header.Get(network.ShareDownloadHeader) == "1" {
-			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": info.Name()}))
+		shareName, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		indexedDirectory := index && roots[shareName].dir
+		if indexedDirectory || r.Header.Get(network.ShareDownloadHeader) == "1" {
+			disposition := "attachment"
+			if previewType := network.SharePreviewType(info.Name()); indexedDirectory && previewType != "" {
+				disposition = "inline"
+				w.Header().Set("Content-Type", previewType)
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+			}
+			w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": info.Name()}))
 		}
 		http.ServeContent(w, r, info.Name(), info.ModTime(), file)
 	}), nil

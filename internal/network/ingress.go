@@ -264,8 +264,11 @@ func (h *Hub) openControlPipe(ctx context.Context, targetID, service string, hop
 		return nil, errors.New("network relay hop limit reached")
 	}
 	h.mu.Lock()
-	control := h.controls[targetID]
-	if h.closed || control == nil || (expected != nil && control != expected) || !control.services[service] || len(h.sessions) >= h.max {
+	control := expected
+	if control == nil {
+		control = h.serviceControlLocked(targetID, service)
+	}
+	if h.closed || !h.controlActiveLocked(targetID, control) || !control.services[service] || len(h.sessions) >= h.max {
 		h.mu.Unlock()
 		return nil, errors.New("target unavailable")
 	}
@@ -275,7 +278,7 @@ func (h *Hub) openControlPipe(ctx context.Context, targetID, service string, hop
 		return nil, err
 	}
 	id := hex.EncodeToString(randomBytes[:])
-	session := &pendingSession{targetID: targetID, ready: make(chan *websocket.Conn, 1)}
+	session := &pendingSession{targetID: targetID, control: control, ready: make(chan *websocket.Conn, 1)}
 	h.sessions[id] = session
 	h.mu.Unlock()
 	if err := control.write(controlMessage{Type: "open", Session: id, Service: service, Hops: hops}); err != nil {
@@ -294,7 +297,7 @@ func (h *Hub) openControlPipe(ctx context.Context, targetID, service string, hop
 	}
 	client, server := pipePair()
 	h.mu.Lock()
-	if h.closed || h.sessions[id] != session || (expected != nil && h.controls[targetID] != expected) {
+	if h.closed || h.sessions[id] != session || !h.controlActiveLocked(targetID, control) {
 		h.mu.Unlock()
 		_ = client.Close()
 		_ = server.Close()

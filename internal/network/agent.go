@@ -25,22 +25,26 @@ import (
 )
 
 type Agent struct {
-	cfg        *AgentConfig
-	dialer     websocket.Dialer
-	services   map[string]Service
-	sem        chan struct{}
-	wg         sync.WaitGroup
-	hooks      func() []HookInfo
-	downstream *Hub
-	webhook    http.Handler
-	handlers   map[string]http.Handler
-	info       AgentInfo
-	shareKey   []byte
-	shareBasic bool
-	shareReady func(string)
+	cfg         *AgentConfig
+	dialer      websocket.Dialer
+	services    map[string]Service
+	sem         chan struct{}
+	wg          sync.WaitGroup
+	hooks       func() []HookInfo
+	downstream  *Hub
+	webhook     http.Handler
+	handlers    map[string]http.Handler
+	info        AgentInfo
+	shareKey    []byte
+	shareBasic  bool
+	shareLinkID *string
+	shareNames  []string
+	shareReady  func(string)
 }
 
 var errShareLinksDenied = errors.New("hub denied share links; enable allow_share_links for this node")
+var errShareLinkIDUnsupported = errors.New("hub did not acknowledge the custom share link ID; upgrade the hub")
+var errShareLinkConflict = errors.New("hub could not reserve the share link ID; choose another ID or wait for the previous registration to expire")
 
 type AgentOptions struct {
 	Version        string
@@ -52,6 +56,7 @@ type AgentOptions struct {
 	Handlers       map[string]http.Handler
 	ShareNames     []string
 	ShareBasic     bool
+	ShareLinkID    *string
 	OnShareReady   func([]string)
 }
 
@@ -68,18 +73,25 @@ func RunAgent(ctx context.Context, cfg *AgentConfig, options ...AgentOptions) er
 		a.info.Version = options[0].Version
 		a.info.Temporary = options[0].Temporary
 		a.info.ExpiresAt = options[0].ExpiresAt
+		a.shareLinkID = options[0].ShareLinkID
+		if a.shareLinkID != nil && (len(options[0].ShareNames) == 0 || (*a.shareLinkID != "" && !validName(*a.shareLinkID))) {
+			return errors.New("custom share link ID requires share names and must be empty or a valid URL segment")
+		}
 		if len(options[0].ShareNames) > 0 {
 			if !a.info.Temporary || a.info.ExpiresAt == nil || a.handlers["files"] == nil || !a.services["files"].InProcess {
 				return errors.New("share links require a temporary in-process files service")
 			}
 			a.shareKey = make([]byte, sha256.Size)
 			a.shareBasic = options[0].ShareBasic
+			if len(a.services) == 1 && len(cfg.Forwards) == 0 {
+				a.shareNames = options[0].ShareNames
+			}
 			if _, err := cryptorand.Read(a.shareKey); err != nil {
 				return fmt.Errorf("generate share key: %w", err)
 			}
 			if ready := options[0].OnShareReady; ready != nil {
 				a.shareReady = func(base string) {
-					ready(shareLinks(a.cfg.Server, base, a.cfg.ID, a.shareKey, a.shareBasic, options[0].ShareNames))
+					ready(shareLinks(a.cfg.Server, base, a.cfg.ID, a.shareKey, a.shareBasic, a.shareLinkID, options[0].ShareNames))
 				}
 			}
 		}
@@ -131,7 +143,7 @@ func RunAgent(ctx context.Context, cfg *AgentConfig, options ...AgentOptions) er
 	for ctx.Err() == nil {
 		connectedAt := time.Now()
 		err := a.control(ctx)
-		if errors.Is(err, errShareLinksDenied) {
+		if errors.Is(err, errShareLinksDenied) || errors.Is(err, errShareLinkIDUnsupported) || errors.Is(err, errShareLinkConflict) {
 			return err
 		}
 		if time.Since(connectedAt) >= time.Minute {
@@ -251,8 +263,10 @@ func (a *Agent) control(ctx context.Context) error {
 	}
 	if err := conn.WriteJSON(controlMessage{
 		Info: &a.info, Type: "register", Services: services, Hooks: inventory,
-		ShareKey:   base64.RawURLEncoding.EncodeToString(a.shareKey),
-		ShareBasic: a.shareBasic,
+		ShareKey:    base64.RawURLEncoding.EncodeToString(a.shareKey),
+		ShareBasic:  a.shareBasic,
+		ShareLinkID: a.shareLinkID,
+		ShareNames:  a.shareNames,
 	}); err != nil {
 		return err
 	}
@@ -263,8 +277,14 @@ func (a *Agent) control(ctx context.Context) error {
 		if err := conn.ReadJSON(&response); err != nil {
 			return fmt.Errorf("hub did not acknowledge share links: %w", err)
 		}
+		if response.Type == "share_links_conflict" {
+			return errShareLinkConflict
+		}
 		if response.Type != "share_links_ready" || response.ShareBasic != a.shareBasic {
 			return errShareLinksDenied
+		}
+		if a.shareLinkID != nil && (response.ShareLinkID == nil || *response.ShareLinkID != *a.shareLinkID) {
+			return errShareLinkIDUnsupported
 		}
 		if a.shareReady != nil {
 			a.shareReady(response.ShareBase)

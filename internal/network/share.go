@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
@@ -20,13 +21,46 @@ const ShareIndexHeader = "X-Webhook-Share-Index"
 const ShareIndexCSP = "sandbox allow-downloads; default-src 'none'; base-uri 'none'; form-action 'none'"
 const ShareBasicChallenge = `Basic realm="webhook share", charset="UTF-8"`
 
+// SharePreviewType returns the media type for files eligible for browser preview.
+func SharePreviewType(name string) string {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".txt", ".text", ".md", ".markdown", ".yaml", ".yml", ".properties", ".ini", ".conf", ".cfg", ".toml", ".log", ".csv", ".tsv", ".jsonl", ".ndjson":
+		return "text/plain; charset=utf-8"
+	case ".json":
+		return "application/json"
+	case ".pdf":
+		return "application/pdf"
+	case ".png":
+		return "image/png"
+	case ".apng":
+		return "image/apng"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".avif":
+		return "image/avif"
+	case ".bmp":
+		return "image/bmp"
+	case ".ico":
+		return "image/x-icon"
+	default:
+		return ""
+	}
+}
+
 func shareProof(key []byte, name string) string {
 	mac := hmac.New(sha256.New, key)
 	_, _ = io.WriteString(mac, name)
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func shareLinkID(key []byte, name string, basic bool) string {
+func shareLinkID(key []byte, name string, basic bool, customID *string) string {
+	if customID != nil {
+		return *customID
+	}
 	if basic {
 		// The short ID identifies the temporary session. The agent checks Basic Auth.
 		return base64.RawURLEncoding.EncodeToString(key[:16])
@@ -34,7 +68,7 @@ func shareLinkID(key []byte, name string, basic bool) string {
 	return shareProof(key, name)
 }
 
-func shareLinks(server, base, node string, key []byte, basic bool, names []string) []string {
+func shareLinks(server, base, node string, key []byte, basic bool, customID *string, names []string) []string {
 	if base == "" {
 		base = strings.TrimSuffix(SharePath, "/")
 	}
@@ -49,7 +83,11 @@ func shareLinks(server, base, node string, key []byte, basic bool, names []strin
 	}
 	links := make([]string, 0, len(names))
 	for _, name := range names {
-		links = append(links, base+"/"+node+"/"+shareLinkID(key, name, basic)+"/"+name)
+		prefix := base + "/" + node
+		if id := shareLinkID(key, name, basic, customID); id != "" {
+			prefix += "/" + id
+		}
+		links = append(links, prefix+"/"+name)
 	}
 	return links
 }
@@ -65,18 +103,15 @@ func (h *Hub) serveShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	node, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, h.sharePath), "/")
-	proof, filePath, _ := strings.Cut(rest, "/")
-	name, _, _ := strings.Cut(filePath, "/")
-	if !validName(node) || !validName(name) || (len(proof) != base64.RawURLEncoding.EncodedLen(sha256.Size) && len(proof) != base64.RawURLEncoding.EncodedLen(16)) {
+	if !validName(node) {
 		http.NotFound(w, r)
 		return
 	}
 	h.mu.Lock()
-	control := h.controls[node]
+	control, filePath := h.shareRouteLocked(node, rest)
 	h.mu.Unlock()
 	now := time.Now()
-	if control == nil || control.shareKey == nil || !now.Before(control.shareExpiry) ||
-		!hmac.Equal([]byte(proof), []byte(shareLinkID(control.shareKey, name, control.shareBasic))) {
+	if control == nil || !now.Before(control.shareExpiry) {
 		http.NotFound(w, r)
 		return
 	}
@@ -130,11 +165,30 @@ func (h *Hub) serveShare(w http.ResponseWriter, r *http.Request) {
 	if control.shareBasic && response.StatusCode == http.StatusUnauthorized && response.Header.Get("WWW-Authenticate") == ShareBasicChallenge {
 		w.Header().Set("WWW-Authenticate", response.Header.Get("WWW-Authenticate"))
 	} else if response.StatusCode != http.StatusOK || response.Header.Get(ShareIndexHeader) != "1" {
-		_, params, _ := mime.ParseMediaType(response.Header.Get("Content-Disposition"))
-		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", params))
+		disposition, params, _ := mime.ParseMediaType(response.Header.Get("Content-Disposition"))
+		previewType := SharePreviewType(filePath)
+		if disposition != "inline" || previewType == "" || !sharePreviewResponse(response, previewType) {
+			disposition = "attachment"
+		}
+		w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, params))
 	}
 	w.WriteHeader(response.StatusCode)
 	if _, err := io.Copy(w, response.Body); err != nil {
 		panic(http.ErrAbortHandler)
+	}
+}
+
+func sharePreviewResponse(response *http.Response, previewType string) bool {
+	contentType := response.Header.Get("Content-Type")
+	switch response.StatusCode {
+	case http.StatusOK:
+		return contentType == previewType
+	case http.StatusPartialContent:
+		mediaType, params, _ := mime.ParseMediaType(contentType)
+		return contentType == previewType || (mediaType == "multipart/byteranges" && params["boundary"] != "")
+	case http.StatusNotModified:
+		return true
+	default:
+		return false
 	}
 }

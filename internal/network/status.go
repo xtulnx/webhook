@@ -48,13 +48,11 @@ func validAgentInfo(info AgentInfo) bool {
 func (h *Hub) markSeen(id string, control *controlConn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.controls[id] != control {
+	if !h.controlActiveLocked(id, control) {
 		return
 	}
-	state := h.states[id]
 	now := time.Now().UTC()
-	state.LastSeenAt = &now
-	h.states[id] = state
+	control.status.LastSeenAt = &now
 }
 
 // Status copies only management metadata; credentials and target addresses are
@@ -72,15 +70,27 @@ func (h *Hub) Status() HubStatus {
 	}
 	for id := range h.nodes {
 		state := h.states[id]
+		control := h.nodeControlLocked(id)
+		if control != nil {
+			state = control.status
+		}
 		state.ConnectedAt = copyTime(state.ConnectedAt)
 		state.DisconnectedAt = copyTime(state.DisconnectedAt)
 		state.LastSeenAt = copyTime(state.LastSeenAt)
 		state.ExpiresAt = copyTime(state.ExpiresAt)
 		state.Services = []string{}
 		state.HookIDs = []string{}
-		if control := h.controls[id]; control != nil {
+		if control != nil {
 			for service := range control.services {
 				state.Services = append(state.Services, service)
+			}
+			if !control.services["files"] {
+				for _, slot := range h.shares[id] {
+					if h.controlActiveLocked(id, slot.control) {
+						state.Services = append(state.Services, "files")
+						break
+					}
+				}
 			}
 			for hook := range control.hooks {
 				state.HookIDs = append(state.HookIDs, hook)

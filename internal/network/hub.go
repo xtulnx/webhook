@@ -34,16 +34,18 @@ var upgrader = websocket.Upgrader{
 }
 
 type controlMessage struct {
-	Info       *AgentInfo `json:"info,omitempty"`
-	Type       string     `json:"type"`
-	Services   []string   `json:"services,omitempty"`
-	Hooks      []HookInfo `json:"hooks,omitempty"`
-	Session    string     `json:"session,omitempty"`
-	Service    string     `json:"service,omitempty"`
-	Hops       int        `json:"hops,omitempty"`
-	ShareKey   string     `json:"share_key,omitempty"`
-	ShareBasic bool       `json:"share_basic,omitempty"`
-	ShareBase  string     `json:"share_base,omitempty"`
+	Info        *AgentInfo `json:"info,omitempty"`
+	Type        string     `json:"type"`
+	Services    []string   `json:"services,omitempty"`
+	Hooks       []HookInfo `json:"hooks,omitempty"`
+	Session     string     `json:"session,omitempty"`
+	Service     string     `json:"service,omitempty"`
+	Hops        int        `json:"hops,omitempty"`
+	ShareKey    string     `json:"share_key,omitempty"`
+	ShareBasic  bool       `json:"share_basic,omitempty"`
+	ShareLinkID *string    `json:"share_link_id,omitempty"`
+	ShareNames  []string   `json:"share_names,omitempty"`
+	ShareBase   string     `json:"share_base,omitempty"`
 }
 
 // HookInfo contains only the metadata needed for early filtering at the hub.
@@ -62,7 +64,12 @@ type controlConn struct {
 	hooks       map[string]HookInfo
 	shareKey    []byte
 	shareBasic  bool
+	shareLinkID *string
 	shareExpiry time.Time
+	shareIDs    map[string]bool
+	shareNames  map[string]bool
+	shareSlot   *shareRegistration
+	status      NodeStatus
 	writeMu     sync.Mutex
 }
 
@@ -82,6 +89,7 @@ type pendingSession struct {
 	source   *websocket.Conn
 	pipe     net.Conn
 	targetID string
+	control  *controlConn
 	ready    chan *websocket.Conn
 	paired   bool
 	target   *websocket.Conn
@@ -95,6 +103,7 @@ type Hub struct {
 	mu             sync.Mutex
 	nodes          map[string]NodePolicy
 	controls       map[string]*controlConn
+	shares         map[string][]*shareRegistration
 	sessions       map[string]*pendingSession
 	max            int
 	routes         map[string]HookRoute
@@ -117,6 +126,7 @@ func NewHub(cfg *HubConfig) *Hub {
 		requestTimeout: timeout,
 		nodes:          make(map[string]NodePolicy),
 		controls:       make(map[string]*controlConn),
+		shares:         make(map[string][]*shareRegistration),
 		sessions:       make(map[string]*pendingSession),
 		max:            cfg.MaxSessions,
 		routes:         make(map[string]HookRoute),
@@ -154,6 +164,13 @@ func (h *Hub) Close() {
 	h.closed = true
 	for _, c := range h.controls {
 		_ = c.conn.Close()
+	}
+	for _, registrations := range h.shares {
+		for _, registration := range registrations {
+			if registration.disconnected.IsZero() && registration.control.shareIDs != nil {
+				_ = registration.control.conn.Close()
+			}
+		}
 	}
 	for _, s := range h.sessions {
 		if s.source != nil {
@@ -270,16 +287,34 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 		}
 	}
 	control := &controlConn{conn: conn, services: services, hooks: hooks}
-	if register.ShareKey != "" {
+	if register.ShareKey != "" || register.ShareLinkID != nil || len(register.ShareNames) != 0 {
 		key, err := base64.RawURLEncoding.DecodeString(register.ShareKey)
 		if err != nil || len(key) != sha256.Size || !h.nodes[id].AllowShareLinks || !services["files"] ||
-			!info.Temporary || info.ExpiresAt == nil || !time.Now().Before(*info.ExpiresAt) {
+			!info.Temporary || info.ExpiresAt == nil || !time.Now().Before(*info.ExpiresAt) ||
+			(register.ShareLinkID != nil && *register.ShareLinkID != "" && !validName(*register.ShareLinkID)) {
 			_ = control.write(controlMessage{Type: "share_links_denied"})
 			return
 		}
 		control.shareKey = key
 		control.shareBasic = register.ShareBasic
+		control.shareLinkID = register.ShareLinkID
 		control.shareExpiry = *info.ExpiresAt
+		if len(register.ShareNames) > 0 {
+			if len(services) != 1 || len(hooks) != 0 {
+				_ = control.write(controlMessage{Type: "share_links_denied"})
+				return
+			}
+			control.shareIDs = make(map[string]bool)
+			control.shareNames = make(map[string]bool, len(register.ShareNames))
+			for _, name := range register.ShareNames {
+				if !validName(name) || control.shareNames[name] {
+					_ = control.write(controlMessage{Type: "share_links_denied"})
+					return
+				}
+				control.shareNames[name] = true
+				control.shareIDs[shareLinkID(key, name, control.shareBasic, control.shareLinkID)] = true
+			}
+		}
 	}
 	// Ensure the registration acknowledgement precedes any open message.
 	control.writeMu.Lock()
@@ -289,14 +324,24 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 		control.writeMu.Unlock()
 		return
 	}
-	old := h.controls[id]
-	h.controls[id] = control
 	now := time.Now().UTC()
-	h.states[id] = NodeStatus{ID: id, Status: "online", AgentInfo: info, ConnectedAt: &now, LastSeenAt: &now, PeerAddress: r.RemoteAddr}
+	if control.shareKey != nil && !h.registerShareLocked(id, control, now) {
+		h.mu.Unlock()
+		_ = control.writeLocked(controlMessage{Type: "share_links_conflict"})
+		control.writeMu.Unlock()
+		return
+	}
+	var old *controlConn
+	if control.shareIDs == nil {
+		old = h.controls[id]
+		h.controls[id] = control
+	}
+	control.status = NodeStatus{ID: id, Status: "online", AgentInfo: info, ConnectedAt: &now, LastSeenAt: &now, PeerAddress: r.RemoteAddr}
+	h.states[id] = control.status
 	h.mu.Unlock()
 	var ackErr error
 	if control.shareKey != nil {
-		ackErr = control.writeLocked(controlMessage{Type: "share_links_ready", ShareBase: h.shareBase, ShareBasic: control.shareBasic})
+		ackErr = control.writeLocked(controlMessage{Type: "share_links_ready", ShareBase: h.shareBase, ShareBasic: control.shareBasic, ShareLinkID: control.shareLinkID})
 	}
 	control.writeMu.Unlock()
 	if old != nil {
@@ -306,8 +351,13 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 		h.mu.Lock()
 		if h.controls[id] == control {
 			delete(h.controls, id)
-			state := h.states[id]
-			now := time.Now().UTC()
+		}
+		now := time.Now().UTC()
+		if slot := control.shareSlot; slot != nil && slot.control == control {
+			slot.disconnected = now
+		}
+		if h.nodeControlLocked(id) == nil {
+			state := control.status
 			state.Status = "offline"
 			state.DisconnectedAt = &now
 			h.states[id] = state
@@ -361,7 +411,7 @@ func (h *Hub) handleSource(w http.ResponseWriter, r *http.Request, id string, pr
 		return
 	}
 	h.mu.Lock()
-	control := h.controls[targetID]
+	control := h.serviceControlLocked(targetID, service)
 	available := !h.closed && control != nil && control.services[service]
 	full := len(h.sessions) >= h.max
 	h.mu.Unlock()
@@ -383,9 +433,9 @@ func (h *Hub) handleSource(w http.ResponseWriter, r *http.Request, id string, pr
 		return
 	}
 	sessionID := hex.EncodeToString(random[:])
-	session := &pendingSession{sourceID: id, source: conn, targetID: targetID, ready: make(chan *websocket.Conn, 1)}
+	session := &pendingSession{sourceID: id, source: conn, targetID: targetID, control: control, ready: make(chan *websocket.Conn, 1)}
 	h.mu.Lock()
-	if h.closed || len(h.sessions) >= h.max || h.controls[targetID] != control {
+	if h.closed || len(h.sessions) >= h.max || h.serviceControlLocked(targetID, service) != control {
 		h.mu.Unlock()
 		return
 	}
@@ -416,7 +466,7 @@ func (h *Hub) handleTarget(w http.ResponseWriter, r *http.Request, id string, pr
 	sessionID := r.Header.Get(sessionHeader)
 	h.mu.Lock()
 	session := h.sessions[sessionID]
-	valid := session != nil && session.targetID == id
+	valid := session != nil && session.targetID == id && h.controlActiveLocked(id, session.control)
 	h.mu.Unlock()
 	if !valid {
 		http.Error(w, "unknown session", http.StatusForbidden)
@@ -427,7 +477,7 @@ func (h *Hub) handleTarget(w http.ResponseWriter, r *http.Request, id string, pr
 		return
 	}
 	h.mu.Lock()
-	if h.sessions[sessionID] != session || session.paired {
+	if h.sessions[sessionID] != session || session.paired || !h.controlActiveLocked(id, session.control) {
 		h.mu.Unlock()
 		_ = conn.Close()
 		return

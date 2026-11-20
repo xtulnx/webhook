@@ -82,6 +82,23 @@ func TestShareBasicAuthFile(t *testing.T) {
 	}
 }
 
+func TestTemporaryAgentShareLinkIDValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"--share-link-id", "release"},
+		{"--share-link-id", ""},
+		{"--share-link", "--share-link-id", "nested/release"},
+		{"--share-link", "--share-link-id", ".."},
+		{"--share-link", "--share-link-id", "release%2Fdemo"},
+		{"--share-link", "--share-link-id", `nested\release`},
+	} {
+		var stderr bytes.Buffer
+		if code := runAgentCommand(append([]string{"--share", "pkg=unused"}, args...), io.Discard, &stderr); code != 2 ||
+			!strings.Contains(stderr.String(), "share-link-id requires") {
+			t.Errorf("expected link ID validation for %v, got exit %d: %s", args, code, &stderr)
+		}
+	}
+}
+
 func TestTemporaryAgentCommand(t *testing.T) {
 	binary, cleanup := buildWebhook(t)
 	t.Cleanup(cleanup)
@@ -99,6 +116,10 @@ hub:
     - id: ops
       token_env: NETWORK_CLI_TEST_OPS_TOKEN
       allow: [temp/files]
+    - id: other
+      token_env: NETWORK_CLI_TEST_OTHER_TOKEN
+      services: [files]
+      allow_share_links: true
 `
 	path := filepath.Join(dir, "hub.yaml")
 	shared := filepath.Join(dir, "shared")
@@ -116,11 +137,29 @@ hub:
 	if err := os.WriteFile(filepath.Join(nested, "space & file.txt"), []byte("nested"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	previews := []struct{ name, content, mediaType string }{
+		{"data.json", `{"ok":true}`, "application/json"},
+		{"settings.yaml", "key: value\n", "text/plain; charset=utf-8"},
+		{"settings.properties", "key=value\n", "text/plain; charset=utf-8"},
+		{"report.pdf", "%PDF-1.4", "application/pdf"},
+		{"image.PNG", "\x89PNG\r\n\x1a\n", "image/png"},
+	}
+	for _, fixture := range previews {
+		if err := os.WriteFile(filepath.Join(nested, fixture.name), []byte(fixture.content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"page.html", "drawing.svg", "archive.zip"} {
+		if err := os.WriteFile(filepath.Join(nested, name), []byte("attachment"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	host, port := serverAddress(t)
 	origin := net.JoinHostPort(host, port)
 	env := append(webhookEnv(),
 		"NETWORK_CLI_TEST_TOKEN="+strings.Repeat("s", 64),
-		"NETWORK_CLI_TEST_OPS_TOKEN="+strings.Repeat("o", 64))
+		"NETWORK_CLI_TEST_OPS_TOKEN="+strings.Repeat("o", 64),
+		"NETWORK_CLI_TEST_OTHER_TOKEN="+strings.Repeat("a", 64))
 	start := func(output io.Writer, args ...string) *exec.Cmd {
 		cmd := exec.Command(binary, args...)
 		cmd.Env = env
@@ -219,6 +258,9 @@ hub:
 	if status, _, _ := download("GET", strings.TrimSuffix(links[0], "/pkg")+"/dist/file.txt", ""); status != 404 {
 		t.Fatal("single-file link authorized another share")
 	}
+	if status, _, _ := download("GET", proxy.URL+"/s/temp/pkg", ""); status != 404 {
+		t.Fatal("default sharing accepted a link without a generated ID")
+	}
 	if status, _, _ := download("POST", links[0], ""); status != 405 {
 		t.Fatal("download route allowed POST")
 	}
@@ -264,9 +306,29 @@ hub:
 	}
 	defer basicOutput.Close()
 	start(basicOutput, "agent", "--server", serverURL, "--id", "temp", "--transport-prefix", "/agent/v1",
-		"--token-env", "NETWORK_CLI_TEST_TOKEN", "--share-link", "--share-index", "--share", "dist="+shared,
+		"--token-env", "NETWORK_CLI_TEST_TOKEN", "--share-link", "--share-link-id", "release-demo", "--share-index",
+		"--share", "dist="+shared, "--share", "pkg="+file,
 		"--share-basic-user", "team", "--share-basic-password", "test-password", "--duration", "30s")
-	basicLink := readAgentShareLinks(t, basicOutput.Name(), 1)[0]
+	basicLinks := readAgentShareLinks(t, basicOutput.Name(), 2)
+	basicLink := basicLinks[0]
+	if basicLink != proxy.URL+"/s/temp/release-demo/dist" || basicLinks[1] != proxy.URL+"/s/temp/release-demo/pkg" {
+		t.Fatalf("unexpected custom links: %v", basicLinks)
+	}
+	otherOutput, err := os.CreateTemp(dir, "other-links-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer otherOutput.Close()
+	otherAgent := start(otherOutput, "agent", "--server", serverURL, "--id", "temp", "--transport-prefix", "/agent/v1",
+		"--token-env", "NETWORK_CLI_TEST_TOKEN", "--share-link", "--share-link-id", "office",
+		"--share", "dist="+file, "--duration", "30s")
+	otherLink := readAgentShareLinks(t, otherOutput.Name(), 1)[0]
+	if otherLink != proxy.URL+"/s/temp/office/dist" {
+		t.Fatalf("unexpected alternate node link: %s", otherLink)
+	}
+	if status, _, body := download("GET", otherLink, ""); status != 200 || body != "shared" {
+		t.Fatal("custom link did not resolve on the other node")
+	}
 	if status, headers, _ := download("GET", basicLink, ""); status != 401 || headers.Get("WWW-Authenticate") != network.ShareBasicChallenge {
 		t.Fatal("share did not forward the agent's Basic Auth challenge")
 	}
@@ -275,6 +337,9 @@ hub:
 		t.Fatal("share accepted invalid credentials")
 	}
 	authPassword = "test-password"
+	if status, _, _ := download("GET", proxy.URL+"/s/temp/release-demo/", ""); status != 404 {
+		t.Fatal("named registration exposed a unified root")
+	}
 	if status, headers, body := download("GET", basicLink, ""); status != 200 ||
 		headers.Get("Content-Disposition") != "" || !strings.Contains(body, `href="./dist/nested/"`) ||
 		!strings.Contains(headers.Get("Content-Security-Policy"), "sandbox allow-downloads") {
@@ -284,11 +349,80 @@ hub:
 		!strings.Contains(body, `href="./space%20&amp;%20file.txt"`) {
 		t.Fatalf("unexpected nested directory index: %d %q", status, body)
 	}
-	if status, _, body := download("GET", basicLink+"/nested/space%20%26%20file.txt", ""); status != 200 || body != "nested" {
+	if status, headers, body := download("GET", basicLink+"/nested/space%20%26%20file.txt", ""); status != 200 ||
+		headers.Get("Content-Type") != "text/plain; charset=utf-8" || !strings.HasPrefix(headers.Get("Content-Disposition"), "inline;") ||
+		body != "nested" {
 		t.Fatal("file listed in directory could not be downloaded")
+	}
+	for _, fixture := range previews {
+		status, headers, body := download("GET", basicLink+"/nested/"+fixture.name, "")
+		if status != 200 || headers.Get("Content-Type") != fixture.mediaType || body != fixture.content ||
+			headers.Get("X-Content-Type-Options") != "nosniff" ||
+			headers.Get("Content-Disposition") != "inline; filename="+fixture.name {
+			t.Errorf("unexpected preview for %s: %d %v %q", fixture.name, status, headers, body)
+		}
+	}
+	if status, headers, body := download("GET", basicLink+"/nested/report.pdf", "bytes=0-3"); status != 206 ||
+		headers.Get("Content-Type") != "application/pdf" || headers.Get("Content-Range") != "bytes 0-3/8" ||
+		headers.Get("Content-Disposition") != "inline; filename=report.pdf" || body != "%PDF" {
+		t.Fatalf("unexpected PDF range: %d %v %q", status, headers, body)
+	}
+	for _, name := range []string{"page.html", "drawing.svg", "archive.zip"} {
+		if status, headers, _ := download("GET", basicLink+"/nested/"+name, ""); status != 200 ||
+			headers.Get("Content-Disposition") != "attachment; filename="+name {
+			t.Errorf("expected %s to be an attachment: %d %v", name, status, headers)
+		}
+	}
+	if status, _, body := download("GET", basicLinks[1], ""); status != 200 || body != "shared" {
+		t.Fatal("second share did not reuse the custom link ID")
+	}
+	if status, _, _ := download("GET", proxy.URL+"/s/temp/wrong-id/dist", ""); status != 404 {
+		t.Fatal("unexpected link ID authorized the share")
+	}
+	if status, _, _ := download("GET", proxy.URL+"/s/temp/office/pkg", ""); status != 404 {
+		t.Fatal("custom link resolved a share on another registration")
 	}
 	if status, _, _ := download("GET", links[1], ""); status != 404 {
 		t.Fatal("a new sharing session restored an obsolete link")
+	}
+
+	killAndWait(otherAgent)
+	for _, linkID := range []string{"release-demo", "office", ""} {
+		conflict := exec.Command(binary, "agent", "--server", serverURL, "--id", "temp",
+			"--transport-prefix", "/agent/v1", "--token-env", "NETWORK_CLI_TEST_TOKEN",
+			"--share-link", "--share-link-id", linkID, "--share", "different="+file, "--duration", "3s")
+		conflict.Env = env
+		if output, err := conflict.CombinedOutput(); err == nil || !strings.Contains(string(output), "hub could not reserve the share link ID") {
+			t.Errorf("expected conflict for %q, got %v: %s", linkID, err, output)
+		}
+	}
+	emptyIDOutput, err := os.CreateTemp(dir, "empty-id-links-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer emptyIDOutput.Close()
+	start(emptyIDOutput, "agent", "--server", serverURL, "--id", "other", "--transport-prefix", "/agent/v1",
+		"--token-env", "NETWORK_CLI_TEST_OTHER_TOKEN", "--share-link", "--share-link-id", "", "--share-index",
+		"--share", "pkg="+file, "--share", "dist="+shared, "--duration", "30s")
+	emptyIDLinks := readAgentShareLinks(t, emptyIDOutput.Name(), 2)
+	if emptyIDLinks[0] != proxy.URL+"/s/other/pkg" || emptyIDLinks[1] != proxy.URL+"/s/other/dist" {
+		t.Fatalf("empty link ID was not omitted: %v", emptyIDLinks)
+	}
+	authPassword = ""
+	if status, _, _ := download("GET", proxy.URL+"/s/other/", ""); status != 404 {
+		t.Fatal("empty link ID exposed a unified root")
+	}
+	if status, _, body := download("GET", emptyIDLinks[0], ""); status != 200 || body != "shared" {
+		t.Fatal("file link without a link ID failed")
+	}
+	if status, _, body := download("GET", emptyIDLinks[1], ""); status != 200 || !strings.Contains(body, `href="./dist/nested/"`) {
+		t.Fatal("directory index without a link ID failed")
+	}
+	if status, _, body := download("GET", emptyIDLinks[1]+"/nested/space%20%26%20file.txt", ""); status != 200 || body != "nested" {
+		t.Fatal("nested file link without a link ID failed")
+	}
+	if status, _, _ := download("GET", otherLink, ""); status != 404 {
+		t.Fatal("old custom link remained available")
 	}
 }
 
