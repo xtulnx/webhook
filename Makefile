@@ -5,9 +5,12 @@ INSTALL_DIR ?= /usr/local/bin
 BINARY_NAME ?= webhook
 COMMAND := ./cmd/webhook
 LDFLAGS ?=
+VERSION ?=
+BUILD_ID ?= t$(shell date -u +%Y%m%d%H%M%S)
+VERSION_FLAGS = $(if $(VERSION),-X main.version=$(VERSION))
 
 .DEFAULT_GOAL := help
-.PHONY: help all build install test vet deps tidy clean release release-linux release-linux-x86 release-windows demo smoke
+.PHONY: help all build build-dev install test vet deps tidy clean release release-linux release-linux-x86 release-windows demo smoke
 
 help: ## 显示可用命令
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -16,7 +19,11 @@ all: build test ## 构建并测试
 
 build: ## 构建到 build/webhook（Windows 为 webhook.exe）
 	@mkdir -p build
-	$(GO) build -trimpath -ldflags="$(LDFLAGS)" -o build/$(BINARY_NAME)$(if $(filter windows,$(shell $(GO) env GOOS)),.exe,) $(COMMAND)
+	$(GO) build -trimpath -ldflags="$(VERSION_FLAGS) $(LDFLAGS)" -o build/$(BINARY_NAME)$(if $(filter windows,$(shell $(GO) env GOOS)),.exe,) $(COMMAND)
+
+build-dev: ## 构建带递增预发布版本的本地测试二进制，需要 VERSION=X.Y.Z
+	@test -n "$(VERSION)" || { echo "用法：make build-dev VERSION=X.Y.Z"; exit 2; }
+	$(MAKE) build VERSION="$(VERSION)-dev.$(BUILD_ID)"
 
 install: build ## 安装到 INSTALL_DIR（保留 BINARY_NAME 自定义）
 	install -d "$(INSTALL_DIR)"

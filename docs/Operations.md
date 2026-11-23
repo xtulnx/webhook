@@ -161,6 +161,28 @@ webhook update rollback --state-dir /var/lib/webhook/update
 
 Admin 只提供认证后的状态和检查，不提供安装接口。`update-enabled: false` 禁用 Admin 检查，并不禁用独立 CLI 子命令。
 
+### 本地构建版本
+
+```sh
+make build VERSION=0.2.0
+make build-dev VERSION=0.2.0
+make build-dev VERSION=0.2.0 BUILD_ID=t20261123153001
+./build/webhook -version
+```
+
+`build-dev` 默认用 UTC 编译时间（精确到秒）生成类似 `0.2.0-dev.t20261123153000` 的版本。同一基础版本下，时间越晚的测试构建排序越高，同秒连续构建时可显式指定更大的、同格式的 `BUILD_ID`。正式版 `0.2.0` 排在该系列测试版之后。如果已经安装了正式版 `0.2.0`，想让检查提示更新，可以使用下一版本的测试构建，例如 `make build-dev VERSION=0.2.1`。SemVer 的 `+时间` 构建元数据不参与排序。直接用 Go 构建也可以注入版本，例如 `go build -ldflags '-X main.version=0.2.0' ./cmd/webhook`。
+
+### 从本地二进制更新
+
+```sh
+/usr/local/bin/webhook update check --file ./build/webhook
+/usr/local/bin/webhook update apply --file ./build/webhook --state-dir /var/lib/webhook/update
+./build/webhook update apply --self --target /usr/local/bin/webhook --state-dir /var/lib/webhook/update
+/usr/local/bin/webhook update rollback --state-dir /var/lib/webhook/update
+```
+
+本地检查和安装全程使用本机文件。只传入自己构建或已验证来源的二进制，因为命令会执行它的 `-version`。检查按 SemVer 报告是否有更高版本，显式安装也允许同版本重装或降级，默认要求确认。`--file` 接收解包后的二进制路径。`--self` 从新二进制启动，必须指定已安装程序的路径。两种安装方式共用备份和回滚流程，完成后重启服务。在 Windows 上，若安装目标正在被服务占用，先停止服务，再从新二进制运行 `--self`。
+
 ## 排错表
 
 | 表现 | 检查方式 |

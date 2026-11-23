@@ -89,6 +89,9 @@
 | --- | --- |
 | `update check` | `--repository`、`--version`、`--json` |
 | `update apply` | `--repository`、`--version`、`--target`、`--state-dir`、`--yes`、`--allow-unsigned` |
+| `update check --file 路径` | `--target`、`--json` |
+| `update apply --file 路径` | `--target`、`--state-dir`、`--yes` |
+| `update apply --self` | `--target`（必填）、`--state-dir`、`--yes` |
 | `update rollback` | `--target`、`--state-dir` |
 | `agent` | `--server`、`--transport-prefix`、`--id`、`--token`/`--token-env`/`--token-file`、`--ca-file`、`--duration`、`--max-connections`、`--connect`、可重复的 `--share`/`--publish`/`--forward`、`--share-link`、`--share-link-id`、`--share-index`、`--share-basic-user` 和 `--share-basic-password` 或 `--share-basic-auth-file` |
 

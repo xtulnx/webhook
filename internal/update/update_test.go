@@ -30,6 +30,9 @@ func TestCompareVersions(t *testing.T) {
 		{left: "2.8.3", right: "v2.8.3", want: 0},
 		{left: "2.8.3-rc.1", right: "2.8.3", want: -1},
 		{left: "2.8.3-rc.2", right: "2.8.3-rc.1", want: 1},
+		{left: "0.2.0-dev.t20261123153001", right: "0.2.0-dev.t20261123153000", want: 1},
+		{left: "0.2.0", right: "0.2.0-dev.t20261123153001", want: 1},
+		{left: "0.2.0+20261123153001", right: "0.2.0+20261123153000", want: 0},
 		{left: "dev", right: "2.8.3", want: -1},
 		{left: "v1.0.0", right: "1.0.0-dev", want: 1},
 		// Crossing from the historical upstream version line is an explicit migration.

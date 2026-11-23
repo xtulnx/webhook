@@ -173,19 +173,9 @@ func (c *Client) Apply(ctx context.Context, options ApplyOptions) (State, error)
 	if err != nil {
 		return State{}, err
 	}
-	stateDir := strings.TrimSpace(options.StateDir)
-	if stateDir == "" {
-		stateDir, err = os.Getwd()
-		if err != nil {
-			return State{}, fmt.Errorf("locate update state directory: %w", err)
-		}
-	}
-	stateDir, err = filepath.Abs(stateDir)
+	stateDir, err := prepareStateDir(options.StateDir)
 	if err != nil {
-		return State{}, fmt.Errorf("resolve update state directory: %w", err)
-	}
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return State{}, fmt.Errorf("create update state directory: %w", err)
+		return State{}, err
 	}
 
 	archive, err := os.CreateTemp(stateDir, ".webhook-update-*.tar.gz")
@@ -225,23 +215,53 @@ func (c *Client) Apply(ctx context.Context, options ApplyOptions) (State, error)
 		}
 	}
 
+	return installBinary(newBinary, target, stateDir, c.Version, result.Manifest.Version, strings.ToLower(asset.SHA256))
+}
+
+func prepareStateDir(directory string) (string, error) {
+	var err error
+	stateDir := strings.TrimSpace(directory)
+	if stateDir == "" {
+		stateDir, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("locate update state directory: %w", err)
+		}
+	}
+	stateDir, err = filepath.Abs(stateDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve update state directory: %w", err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return "", fmt.Errorf("create update state directory: %w", err)
+	}
+
+	return stateDir, nil
+}
+
+func installBinary(binary, target, stateDir, currentVersion, installedVersion, checksum string) (State, error) {
 	backup := target + ".previous"
+	state := State{
+		CurrentVersion:   currentVersion,
+		InstalledVersion: installedVersion,
+		Target:           target,
+		Backup:           backup,
+		SHA256:           checksum,
+		AppliedAt:        time.Now().UTC(),
+	}
+	stateFile, err := stageState(stateDir, state)
+	if err != nil {
+		return State{}, fmt.Errorf("prepare update state: %w", err)
+	}
+	defer os.Remove(stateFile)
+
 	if err := copyFile(target, backup); err != nil {
 		return State{}, fmt.Errorf("backup current binary: %w", err)
 	}
-	if err := replaceExecutable(newBinary, target); err != nil {
+	if err := replaceExecutable(binary, target); err != nil {
 		return State{}, fmt.Errorf("replace executable: %w", err)
 	}
 
-	state := State{
-		CurrentVersion:   c.Version,
-		InstalledVersion: result.Manifest.Version,
-		Target:           target,
-		Backup:           backup,
-		SHA256:           strings.ToLower(asset.SHA256),
-		AppliedAt:        time.Now().UTC(),
-	}
-	if err := writeState(stateDir, state); err != nil {
+	if err := replaceFile(stateFile, statePath(stateDir)); err != nil {
 		return state, fmt.Errorf("update installed but state could not be written: %w", err)
 	}
 	return state, nil
@@ -594,33 +614,56 @@ func statePath(stateDir string) string {
 }
 
 func writeState(stateDir string, state State) error {
-	data, err := json.MarshalIndent(state, "", "  ")
+	tmpPath, err := stageState(stateDir, state)
 	if err != nil {
 		return err
+	}
+	defer os.Remove(tmpPath)
+	return replaceFile(tmpPath, statePath(stateDir))
+}
+
+func stageState(stateDir string, state State) (string, error) {
+	path := statePath(stateDir)
+	info, err := os.Lstat(path)
+	if err == nil && info.IsDir() {
+		return "", fmt.Errorf("state path %s is a directory", path)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return "", err
 	}
 	data = append(data, '\n')
 	tmp, err := os.CreateTemp(stateDir, ".webhook-update-state-*")
 	if err != nil {
-		return err
+		return "", err
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	keep := false
+	defer func() {
+		if !keep {
+			os.Remove(tmpPath)
+		}
+	}()
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
-		return err
+		return "", err
 	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return err
+		return "", err
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return err
+		return "", err
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return "", err
 	}
-	return replaceFile(tmpPath, statePath(stateDir))
+	keep = true
+	return tmpPath, nil
 }
 
 func readState(stateDir string) (State, error) {
