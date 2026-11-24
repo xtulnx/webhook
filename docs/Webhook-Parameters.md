@@ -93,8 +93,10 @@
 | `update apply --file 路径` | `--target`、`--state-dir`、`--yes` |
 | `update apply --self` | `--target`（必填）、`--state-dir`、`--yes` |
 | `update rollback` | `--target`、`--state-dir` |
-| `agent` | `--server`、`--transport-prefix`、`--id`、`--token`/`--token-env`/`--token-file`、`--ca-file`、`--duration`、`--max-connections`、`--connect`、可重复的 `--share`/`--publish`/`--forward`、`--share-link`、`--share-link-id`、`--share-index`、`--share-basic-user` 和 `--share-basic-password` 或 `--share-basic-auth-file` |
+| `agent` | `--server`、`--transport-prefix`、`--id`、`--token`/`--token-env`/`--token-file`、`--ca-file`、`--duration`、`--max-connections`、`--connect`、可重复的 `--share`/`--publish`/`--forward`、`--share-link`、`--share-link-id`、`--share-index`、`--share-upload`、`--share-basic-user` 和 `--share-basic-password` 或 `--share-basic-auth-file` |
 
 `--share-link-id` 配合 `--share-link` 使用。省略参数时自动生成链接 ID。显式传入 `--share-link-id ""` 会省略这一段，并独占该节点的公网分享路径。`--share-index` 在各共享目录内提供索引和文件预览。地址格式和使用示例见[HTTPS 文件分享](Network.md#通过-hub-的-https-链接下载)和[同一节点 ID 并行分享](Network.md#同一节点-id-并行分享)。
+
+`--share-upload` 对本次命令的所有 `--share` 开放 HTTP PUT，允许覆盖共享文件或写入共享目录的第一层。用法见[上传到共享文件或目录](Network.md#上传到共享文件或目录)。
 
 临时 Agent 默认 duration=1h、max-connections=8，令牌三选一；正式 YAML Agent 默认 max_connections=64。更新子命令默认仓库为 xtulnx/webhook，apply/rollback 状态目录默认当前工作目录，target 默认当前可执行文件。使用说明和权限约束分别见[运维](Operations.md)、[组网](Network.md)。

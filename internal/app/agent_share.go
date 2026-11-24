@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/xtulnx/webhook/internal/network"
 )
@@ -52,11 +53,12 @@ func (a *shareBasicAuth) accepts(r *http.Request) bool {
 }
 
 type shareRoot struct {
-	path string
-	dir  bool
+	path          string
+	dir           bool
+	uploadDirInfo os.FileInfo
 }
 
-func newShareHandler(values []string, index bool, auth *shareBasicAuth) (http.Handler, error) {
+func newShareHandler(values []string, index, upload bool, auth *shareBasicAuth) (http.Handler, error) {
 	roots := make(map[string]shareRoot, len(values))
 	for _, value := range values {
 		name, path, ok := strings.Cut(value, "=")
@@ -81,18 +83,37 @@ func newShareHandler(values []string, index bool, auth *shareBasicAuth) (http.Ha
 		if !info.IsDir() && !info.Mode().IsRegular() {
 			return nil, errors.New("share must be a regular file or directory")
 		}
-		roots[name] = shareRoot{path, info.IsDir()}
+		root := shareRoot{path: path, dir: info.IsDir()}
+		if upload {
+			root.uploadDirInfo = info
+			if !root.dir {
+				root.uploadDirInfo, err = os.Stat(filepath.Dir(path))
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		roots[name] = root
 	}
+	allow := "GET, HEAD"
+	if upload {
+		allow += ", PUT"
+	}
+	var uploadCommit sync.Mutex
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.Header().Set("Allow", "GET, HEAD")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !(upload && r.Method == http.MethodPut) {
+			w.Header().Set("Allow", allow)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		if auth != nil && !auth.accepts(r) {
 			w.Header().Set("WWW-Authenticate", network.ShareBasicChallenge)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodPut {
+			serveShareUpload(w, r, roots, &uploadCommit)
 			return
 		}
 		file, info := openShareFile(r.URL.Path, roots)
@@ -125,7 +146,8 @@ func newShareHandler(values []string, index bool, auth *shareBasicAuth) (http.Ha
 }
 
 func validShareEntry(name string) bool {
-	return strings.TrimRight(name, ". ") != "" && !strings.ContainsAny(name, "\\\x00:")
+	return strings.TrimRight(name, ". ") != "" && !strings.ContainsAny(name, "\\\x00:") &&
+		!strings.HasPrefix(strings.ToLower(name), shareUploadTempPrefix)
 }
 
 func openShareFile(requestPath string, roots map[string]shareRoot) (*os.File, os.FileInfo) {

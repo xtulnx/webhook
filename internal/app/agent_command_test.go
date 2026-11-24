@@ -29,14 +29,14 @@ func TestTemporaryShares(t *testing.T) {
 	if err := os.WriteFile(file, []byte("abcdef"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := newShareHandler([]string{"pkg=" + file, "dist=" + dir}, false, nil)
+	handler, err := newShareHandler([]string{"pkg=" + file, "dist=" + dir}, false, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
 		method, path string
 		status       int
-	}{{"GET", "/pkg", 200}, {"HEAD", "/pkg", 200}, {"GET", "/dist/app.war", 200}, {"GET", "/dist", 404}, {"GET", "/dist/../app.war", 404}, {"GET", "/dist/%2e%2e/app.war", 404}, {"POST", "/pkg", 405}} {
+	}{{"GET", "/pkg", 200}, {"HEAD", "/pkg", 200}, {"GET", "/dist/app.war", 200}, {"GET", "/dist", 404}, {"GET", "/dist/../app.war", 404}, {"GET", "/dist/%2e%2e/app.war", 404}, {"POST", "/pkg", 405}, {"PUT", "/pkg", 405}} {
 		r := httptest.NewRequest(test.method, test.path, nil)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
@@ -224,9 +224,9 @@ hub:
 	}
 	client := &http.Client{Timeout: time.Second}
 	var authPassword string
-	download := func(method, link, byteRange string) (int, http.Header, string) {
+	shareRequest := func(method, link, byteRange string, payload io.Reader) (int, http.Header, string) {
 		t.Helper()
-		request, err := http.NewRequest(method, link, nil)
+		request, err := http.NewRequest(method, link, payload)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -236,7 +236,7 @@ hub:
 		}
 		response, err := client.Do(request)
 		if err != nil {
-			t.Fatal("download request failed")
+			t.Fatalf("share request failed: %v", err)
 		}
 		defer response.Body.Close()
 		body, err := io.ReadAll(response.Body)
@@ -244,6 +244,10 @@ hub:
 			t.Fatal(err)
 		}
 		return response.StatusCode, response.Header, string(body)
+	}
+	download := func(method, link, byteRange string) (int, http.Header, string) {
+		t.Helper()
+		return shareRequest(method, link, byteRange, nil)
 	}
 	status, headers, body := download("GET", links[0], "bytes=1-3")
 	if status != 206 || body != "har" || headers.Get("Content-Disposition") != "attachment; filename=file.txt" || headers.Get("Cache-Control") != "no-store" {
@@ -263,6 +267,9 @@ hub:
 	}
 	if status, _, _ := download("POST", links[0], ""); status != 405 {
 		t.Fatal("download route allowed POST")
+	}
+	if status, headers, _ := shareRequest("PUT", links[0], "", strings.NewReader("denied")); status != 405 || headers.Get("Allow") != "GET, HEAD" {
+		t.Fatal("read-only share accepted PUT")
 	}
 
 	connect := func(node, tokenEnv string) *exec.Cmd {
@@ -306,7 +313,7 @@ hub:
 	}
 	defer basicOutput.Close()
 	start(basicOutput, "agent", "--server", serverURL, "--id", "temp", "--transport-prefix", "/agent/v1",
-		"--token-env", "NETWORK_CLI_TEST_TOKEN", "--share-link", "--share-link-id", "release-demo", "--share-index",
+		"--token-env", "NETWORK_CLI_TEST_TOKEN", "--share-link", "--share-link-id", "release-demo", "--share-index", "--share-upload",
 		"--share", "dist="+shared, "--share", "pkg="+file,
 		"--share-basic-user", "team", "--share-basic-password", "test-password", "--duration", "30s")
 	basicLinks := readAgentShareLinks(t, basicOutput.Name(), 2)
@@ -423,6 +430,28 @@ hub:
 	}
 	if status, _, _ := download("GET", otherLink, ""); status != 404 {
 		t.Fatal("old custom link remained available")
+	}
+	if status, headers, _ := shareRequest("PUT", basicLinks[1], "", strings.NewReader("denied")); status != 401 ||
+		headers.Get("WWW-Authenticate") != network.ShareBasicChallenge {
+		t.Fatalf("upload did not require Basic Auth: %d %v", status, headers)
+	}
+	authPassword = "test-password"
+	if status, headers, body := shareRequest("PUT", basicLinks[1], "", strings.NewReader("new file contents")); status != 204 ||
+		headers.Get("Content-Disposition") != "" || body != "" {
+		t.Fatalf("single-file upload failed: %d %v %q", status, headers, body)
+	}
+	if status, _, body := download("GET", basicLinks[1], ""); status != 200 || body != "new file contents" {
+		t.Fatalf("single-file download after upload: %d %q", status, body)
+	}
+	uploadedLink := basicLink + "/incoming%20file.txt"
+	if status, _, body := shareRequest("PUT", uploadedLink, "", io.NopCloser(strings.NewReader("directory upload"))); status != 201 {
+		t.Fatalf("chunked directory upload failed: %d %q", status, body)
+	}
+	if data, err := os.ReadFile(filepath.Join(shared, "incoming file.txt")); err != nil || string(data) != "directory upload" {
+		t.Fatalf("directory upload did not reach the agent's filesystem: %q, %v", data, err)
+	}
+	if status, _, body := download("GET", uploadedLink, ""); status != 200 || body != "directory upload" {
+		t.Fatalf("directory download after upload: %d %q", status, body)
 	}
 }
 

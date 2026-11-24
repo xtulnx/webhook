@@ -349,7 +349,7 @@ curl http://127.0.0.1:19000/dist/another.war
 
 Hub 配置示例见 [hub-temporary.yaml](examples/network/hub-temporary.yaml)。Hub 为 `temp` 配置 `services: [files, ssh]`（只保留实际需要的服务），为 `ops` 配置 `allow: [temp/files]`；需要 SSH 时再添加 `temp/ssh` 并建立对应 `--forward`。每个节点的令牌不同，只有双方各自使用的令牌须与 Hub 相应条目一致。临时命令不读取主配置，可用 `webhook agent --help` 查看参数。
 
-文件入口支持 GET、HEAD 和 Range 下载。加 `--share-index` 可浏览所选共享目录里的文件和子目录，入口既可用于授权 TCP 隧道，也可用于 HTTPS 下载。目录下的符号链接不可访问。共享根路径在启动时解析，请共享由可信本地用户维护的目录。单独使用 `--share` 时，下载者通过已授权的 Agent 隧道取文件。
+文件入口默认只读，支持 GET、HEAD 和 Range 下载。加 `--share-index` 可浏览所选共享目录里的文件和子目录，入口既可用于授权 TCP 隧道，也可用于 HTTPS 下载。目录下的符号链接不可访问。共享根路径在启动时解析，请共享由可信本地用户维护的目录。单独使用 `--share` 时，下载者通过已授权的 Agent 隧道取文件。
 
 开启目录索引后，点击 TXT、JSON、YAML、Properties 等文本文件，以及 PDF、PNG、JPEG、GIF、WebP、AVIF、BMP、ICO 等文件时，浏览器会优先预览，实际显示取决于浏览器的格式支持和设置。HTML、SVG、压缩包等文件作为附件下载。单独用 `--share 名称=文件路径` 发布的 HTTPS 文件链接仍直接下载。通过 Hub 使用预览需要更新 Hub 和 Agent。
 
@@ -441,6 +441,30 @@ webhook agent --server wss://a.abc.com/team --transport-prefix /agent/v1 \
 ```
 
 也可用 `--share-basic-auth-file ./download.auth` 代替两个参数，文件内容为一行 `用户名:密码`。参数中的密码会出现在进程参数中。Hub 转发下载请求的认证头，Agent 校验账号密码并发出 Basic Auth 挑战。下载凭证只在 Agent 配置，Nginx 和 Hub 仍可见经过的请求头。浏览器打开目录链接可进入索引。账号密码对该次 Agent 进程中的所有共享项生效，包括经授权 TCP 隧道访问的文件。
+
+### 上传到共享文件或目录
+
+启动 Agent 时加 `--share-upload`，为本次命令的所有 `--share` 开放 HTTP PUT。通过 HTTPS 链接上传需要更新 Hub 和 Agent，沿用原有的节点授权和链接有效期。通过已授权的 `files` 隧道上传时，只需更新发布分享的 Agent。
+
+```sh
+webhook agent --server wss://a.abc.com --id alice --token-file ./alice.token \
+  --share-link --share-upload --share-basic-auth-file ./share.auth \
+  --share report=./report.pdf --share dist=./dist
+```
+
+将命令输出的两个链接分别设为 `REPORT_URL` 和 `DIST_URL`。请求体是单个文件的完整内容，`curl --upload-file` 会发送 PUT。以下命令会提示输入 Basic Auth 密码。
+
+```sh
+# 覆盖 Agent 上现有的 report.pdf，上传源的文件名可以不同
+curl --fail --user team --upload-file ./new-report.pdf "$REPORT_URL"
+
+# 将文件写入 Agent 的 dist 目录，目标文件名由 URL 指定
+curl --fail --user team --upload-file ./local.zip "$DIST_URL/app.zip"
+```
+
+目录分享的上传地址须在目录链接后追加一段文件名，空格等字符需做 URL 编码，例如 `/app%20latest.zip`。文件写入共享目录的第一层。创建文件返回 `201 Created`，覆盖同名普通文件或单文件分享的目标返回 `204 No Content`。目标为子目录或符号链接时返回 `409 Conflict`。Agent 需要对目标文件所在的目录有写权限，收完整个请求体后才替换目标文件。
+
+已获得链接访问权限的接收者也拥有上传权限。可用 `--share-basic-auth-file` 为链接增加账号密码验证，尤其是使用自定义或空链接 ID 时。HTTPS 上传受 Hub 的 `request_timeout` 和反向代理的请求体大小、传输时限配置约束。使用 Nginx 时，可在分享路径上按需设置 `client_max_body_size` 和 `proxy_request_buffering off`。
 
 ### 通过 Hub 连接普通 TCP 服务
 

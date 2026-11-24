@@ -25,7 +25,7 @@ func runAgentCommand(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("webhook agent", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	setCommandHelp(flags, "使用 Hub 预先授权的节点标识和令牌临时加入组网，可选发布服务或建立本机转发。\n"+
-		"文件分享地址格式为 下载基址/节点ID[/链接ID]/共享名[/目录内路径]，共享名必填。\n"+
+		"文件分享地址格式为 分享基址/节点ID[/链接ID]/共享名[/目录内路径]，共享名必填。\n"+
 		"仅发布临时文件分享时，同一节点 ID 可并行注册。各进程使用不同的非空链接 ID，或由 Agent 自动生成。")
 	cfg := &network.AgentConfig{}
 	flags.StringVar(&cfg.Server, "server", "", "Hub 基础地址，需包含自定义反向代理路径前缀（如有）")
@@ -38,7 +38,7 @@ func runAgentCommand(args []string, stdout, stderr io.Writer) int {
 	flags.IntVar(&cfg.MaxConnections, "max-connections", 8, "最大并发隧道数")
 	lifetime := flags.Duration("duration", time.Hour, "到达指定时长后退出，必须大于 0（例如 30m、1h）")
 	connect := flags.String("connect", "", "通过标准输入输出连接已授权的 节点/服务，不监听本地端口")
-	shareLink := flags.Bool("share-link", false, "为每个 --share 输出临时下载链接，需要 Hub 为本节点启用 allow_share_links")
+	shareLink := flags.Bool("share-link", false, "为每个 --share 输出临时分享链接，需要 Hub 为本节点启用 allow_share_links")
 	var shareLinkID *string
 	flags.Func("share-link-id", "自定义本次分享的 `链接ID`，须配合 --share-link。非空值仅允许英文字母、数字、下划线和连字符。\n"+
 		"省略参数时自动生成。传空字符串会省略路径段，并独占该节点的公网分享路径。", func(value string) error {
@@ -46,11 +46,12 @@ func runAgentCommand(args []string, stdout, stderr io.Writer) int {
 		return nil
 	})
 	shareIndex := flags.Bool("share-index", false, "在各共享目录下提供只读索引，并优先预览支持的文本、PDF 和图片")
+	shareUpload := flags.Bool("share-upload", false, "允许通过 HTTP PUT 上传到本次 --share 的文件或目录")
 	shareUser := flags.String("share-basic-user", "", "临时文件分享的 Basic Auth 用户名")
 	sharePassword := flags.String("share-basic-password", "", "临时文件分享的 Basic Auth 密码（会出现在进程参数中）")
 	shareAuthFile := flags.String("share-basic-auth-file", "", "从本地文件读取一行 Basic Auth 凭证，格式为 用户名:密码")
 	var shares, publishes, forwards agentValues
-	flags.Var(&shares, "share", "共享只读文件或目录，格式为 URL名称=本地路径，可重复指定；服务名为 files")
+	flags.Var(&shares, "share", "共享文件或目录，默认只读，格式为 URL名称=本地路径，可重复指定；服务名为 files")
 	flags.Var(&publishes, "publish", "发布 TCP 服务，格式为 服务名=主机:端口，可重复指定")
 	flags.Var(&forwards, "forward", "本机回环转发入口，格式为 主机:端口=节点/服务，可重复指定")
 	if err := flags.Parse(args); err != nil {
@@ -63,7 +64,7 @@ func runAgentCommand(args []string, stdout, stderr io.Writer) int {
 	if flags.NArg() != 0 || *lifetime <= 0 {
 		return fail(errors.New("unexpected arguments or invalid duration"))
 	}
-	if len(shares) == 0 && (*shareLink || *shareIndex || *shareUser != "" || *sharePassword != "" || *shareAuthFile != "") {
+	if len(shares) == 0 && (*shareLink || *shareIndex || *shareUpload || *shareUser != "" || *sharePassword != "" || *shareAuthFile != "") {
 		return fail(errors.New("share options require at least one --share"))
 	}
 	if shareLinkID != nil && (!*shareLink || (*shareLinkID != "" && !network.ValidShareName(*shareLinkID))) {
@@ -80,7 +81,7 @@ func runAgentCommand(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(err)
 		}
-		handler, err := newShareHandler(shares, *shareIndex, shareAuth)
+		handler, err := newShareHandler(shares, *shareIndex, *shareUpload, shareAuth)
 		if err != nil {
 			return fail(err)
 		}
@@ -118,6 +119,7 @@ func runAgentCommand(args []string, stdout, stderr io.Writer) int {
 	options := network.AgentOptions{Handlers: handlers, Version: version, Temporary: true, ExpiresAt: agentExpiry(ctx)}
 	if *shareLink {
 		options.ShareBasic = shareAuth != nil
+		options.ShareUpload = *shareUpload
 		options.ShareLinkID = shareLinkID
 		for _, value := range shares {
 			name, _, _ := strings.Cut(value, "=")

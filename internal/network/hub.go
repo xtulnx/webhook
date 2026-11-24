@@ -44,6 +44,7 @@ type controlMessage struct {
 	Hops        int        `json:"hops,omitempty"`
 	ShareKey    string     `json:"share_key,omitempty"`
 	ShareBasic  bool       `json:"share_basic,omitempty"`
+	ShareUpload bool       `json:"share_upload,omitempty"`
 	ShareLinkID *string    `json:"share_link_id,omitempty"`
 	ShareNames  []string   `json:"share_names,omitempty"`
 	ShareBase   string     `json:"share_base,omitempty"`
@@ -66,6 +67,7 @@ type controlConn struct {
 	hooks       map[string]HookInfo
 	shareKey    []byte
 	shareBasic  bool
+	shareUpload bool
 	shareLinkID *string
 	shareExpiry time.Time
 	shareIDs    map[string]bool
@@ -296,7 +298,7 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 		}
 	}
 	control := &controlConn{conn: conn, services: services, udpServices: udpServices, hooks: hooks}
-	if register.ShareKey != "" || register.ShareLinkID != nil || len(register.ShareNames) != 0 {
+	if register.ShareKey != "" || register.ShareLinkID != nil || len(register.ShareNames) != 0 || register.ShareUpload {
 		key, err := base64.RawURLEncoding.DecodeString(register.ShareKey)
 		if err != nil || len(key) != sha256.Size || !h.nodes[id].AllowShareLinks || !services["files"] ||
 			!info.Temporary || info.ExpiresAt == nil || !time.Now().Before(*info.ExpiresAt) ||
@@ -306,6 +308,7 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 		}
 		control.shareKey = key
 		control.shareBasic = register.ShareBasic
+		control.shareUpload = register.ShareUpload
 		control.shareLinkID = register.ShareLinkID
 		control.shareExpiry = *info.ExpiresAt
 		if len(register.ShareNames) > 0 {
@@ -350,7 +353,10 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 	h.mu.Unlock()
 	var ackErr error
 	if control.shareKey != nil {
-		ackErr = control.writeLocked(controlMessage{Type: "share_links_ready", ShareBase: h.shareBase, ShareBasic: control.shareBasic, ShareLinkID: control.shareLinkID})
+		ackErr = control.writeLocked(controlMessage{
+			Type: "share_links_ready", ShareBase: h.shareBase, ShareBasic: control.shareBasic,
+			ShareLinkID: control.shareLinkID, ShareUpload: control.shareUpload,
+		})
 	}
 	control.writeMu.Unlock()
 	if old != nil {

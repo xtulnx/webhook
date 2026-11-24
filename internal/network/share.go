@@ -97,22 +97,33 @@ func (h *Hub) serveShare(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", ShareIndexCSP)
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
+	node, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, h.sharePath), "/")
+	var control *controlConn
+	var filePath string
+	if validName(node) {
+		h.mu.Lock()
+		control, filePath = h.shareRouteLocked(node, rest)
+		h.mu.Unlock()
+	}
+	now := time.Now()
+	canUpload := control != nil && now.Before(control.shareExpiry) && control.shareUpload
+	upload := r.Method == http.MethodPut
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && !upload {
+		allow := "GET, HEAD"
+		if canUpload {
+			allow += ", PUT"
+		}
+		w.Header().Set("Allow", allow)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	node, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, h.sharePath), "/")
-	if !validName(node) {
+	if control == nil || !now.Before(control.shareExpiry) {
 		http.NotFound(w, r)
 		return
 	}
-	h.mu.Lock()
-	control, filePath := h.shareRouteLocked(node, rest)
-	h.mu.Unlock()
-	now := time.Now()
-	if control == nil || !now.Before(control.shareExpiry) {
-		http.NotFound(w, r)
+	if upload && !canUpload {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	deadline := now.Add(h.requestTimeout)
@@ -125,23 +136,42 @@ func (h *Hub) serveShare(w http.ResponseWriter, r *http.Request) {
 	_ = controller.SetWriteDeadline(deadline.Add(time.Second))
 	defer controller.SetWriteDeadline(time.Time{})
 	out := &http.Request{
-		Method: r.Method,
-		URL:    &url.URL{Scheme: "http", Host: "network.internal", Path: "/" + filePath},
-		Header: make(http.Header),
-		Close:  true,
+		Method:     r.Method,
+		URL:        &url.URL{Scheme: "http", Host: "network.internal", Path: "/" + filePath},
+		Header:     make(http.Header),
+		Close:      true,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
 	}
-	for _, name := range []string{"Range", "If-Range", "If-Modified-Since", "If-Unmodified-Since"} {
-		for _, value := range r.Header.Values(name) {
-			out.Header.Add(name, value)
+	if upload {
+		_ = controller.SetReadDeadline(deadline)
+		defer controller.SetReadDeadline(time.Time{})
+		out.Body = r.Body
+		out.ContentLength = r.ContentLength
+		if value := r.Header.Get("Content-Range"); value != "" {
+			out.Header.Set("Content-Range", value)
 		}
+		// Let the agent reject an unauthorized or invalid upload before the
+		// transport starts writing its body into the tunnel.
+		if r.ContentLength != 0 {
+			out.Header.Set("Expect", "100-continue")
+		}
+	} else {
+		for _, name := range []string{"Range", "If-Range", "If-Modified-Since", "If-Unmodified-Since"} {
+			for _, value := range r.Header.Values(name) {
+				out.Header.Add(name, value)
+			}
+		}
+		out.Header.Set(ShareDownloadHeader, "1")
 	}
 	if control.shareBasic {
 		out.Header.Set("Authorization", r.Header.Get("Authorization"))
 	}
-	out.Header.Set(ShareDownloadHeader, "1")
 	transport := &http.Transport{
-		DisableKeepAlives:  true,
-		DisableCompression: true,
+		DisableKeepAlives:     true,
+		DisableCompression:    true,
+		ExpectContinueTimeout: time.Second,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return h.openControlPipe(ctx, node, "files", maxHops, control)
 		},
@@ -149,8 +179,8 @@ func (h *Hub) serveShare(w http.ResponseWriter, r *http.Request) {
 	defer transport.CloseIdleConnections()
 	response, err := transport.RoundTrip(out.WithContext(ctx))
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			http.Error(w, "share download timed out", http.StatusGatewayTimeout)
+		if ctx.Err() == context.DeadlineExceeded || !time.Now().Before(deadline) {
+			http.Error(w, "share request timed out", http.StatusGatewayTimeout)
 		} else {
 			http.Error(w, "share temporarily unavailable", http.StatusBadGateway)
 		}
@@ -164,7 +194,7 @@ func (h *Hub) serveShare(w http.ResponseWriter, r *http.Request) {
 	}
 	if control.shareBasic && response.StatusCode == http.StatusUnauthorized && response.Header.Get("WWW-Authenticate") == ShareBasicChallenge {
 		w.Header().Set("WWW-Authenticate", response.Header.Get("WWW-Authenticate"))
-	} else if response.StatusCode != http.StatusOK || response.Header.Get(ShareIndexHeader) != "1" {
+	} else if !upload && (response.StatusCode != http.StatusOK || response.Header.Get(ShareIndexHeader) != "1") {
 		disposition, params, _ := mime.ParseMediaType(response.Header.Get("Content-Disposition"))
 		previewType := SharePreviewType(filePath)
 		if disposition != "inline" || previewType == "" || !sharePreviewResponse(response, previewType) {

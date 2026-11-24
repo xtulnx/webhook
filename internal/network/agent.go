@@ -38,6 +38,7 @@ type Agent struct {
 	info        AgentInfo
 	shareKey    []byte
 	shareBasic  bool
+	shareUpload bool
 	shareLinkID *string
 	shareNames  []string
 	shareReady  func(string)
@@ -45,6 +46,7 @@ type Agent struct {
 
 var errShareLinksDenied = errors.New("hub denied share links; enable allow_share_links for this node")
 var errShareLinkIDUnsupported = errors.New("hub did not acknowledge the custom share link ID; upgrade the hub")
+var errShareUploadUnsupported = errors.New("hub did not acknowledge share uploads; upgrade the hub")
 var errShareLinkConflict = errors.New("hub could not reserve the share link ID; choose another ID or wait for the previous registration to expire")
 
 type AgentOptions struct {
@@ -57,6 +59,7 @@ type AgentOptions struct {
 	Handlers       map[string]http.Handler
 	ShareNames     []string
 	ShareBasic     bool
+	ShareUpload    bool
 	ShareLinkID    *string
 	OnShareReady   func([]string)
 }
@@ -84,6 +87,7 @@ func RunAgent(ctx context.Context, cfg *AgentConfig, options ...AgentOptions) er
 			}
 			a.shareKey = make([]byte, sha256.Size)
 			a.shareBasic = options[0].ShareBasic
+			a.shareUpload = options[0].ShareUpload
 			if len(a.services) == 1 && len(cfg.Forwards) == 0 {
 				a.shareNames = options[0].ShareNames
 			}
@@ -153,7 +157,8 @@ func RunAgent(ctx context.Context, cfg *AgentConfig, options ...AgentOptions) er
 	for ctx.Err() == nil {
 		connectedAt := time.Now()
 		err := a.control(ctx)
-		if errors.Is(err, errShareLinksDenied) || errors.Is(err, errShareLinkIDUnsupported) || errors.Is(err, errShareLinkConflict) {
+		if errors.Is(err, errShareLinksDenied) || errors.Is(err, errShareLinkIDUnsupported) ||
+			errors.Is(err, errShareUploadUnsupported) || errors.Is(err, errShareLinkConflict) {
 			return err
 		}
 		if time.Since(connectedAt) >= time.Minute {
@@ -279,6 +284,7 @@ func (a *Agent) control(ctx context.Context) error {
 		Info: &a.info, Type: "register", Services: services, UDPServices: udpServices, Hooks: inventory,
 		ShareKey:    base64.RawURLEncoding.EncodeToString(a.shareKey),
 		ShareBasic:  a.shareBasic,
+		ShareUpload: a.shareUpload,
 		ShareLinkID: a.shareLinkID,
 		ShareNames:  a.shareNames,
 	}); err != nil {
@@ -299,6 +305,9 @@ func (a *Agent) control(ctx context.Context) error {
 		}
 		if a.shareLinkID != nil && (response.ShareLinkID == nil || *response.ShareLinkID != *a.shareLinkID) {
 			return errShareLinkIDUnsupported
+		}
+		if a.shareUpload && !response.ShareUpload {
+			return errShareUploadUnsupported
 		}
 		if a.shareReady != nil {
 			a.shareReady(response.ShareBase)

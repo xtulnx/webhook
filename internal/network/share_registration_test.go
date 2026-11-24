@@ -155,6 +155,11 @@ func TestShareRegistrationReconnect(t *testing.T) {
 	if h.registerShareLocked("shared", changed, now.Add(2*time.Second)) {
 		t.Fatal("reconnect changed the reserved set of share names")
 	}
+	changed = newControl("a", "laptop")
+	changed.shareUpload = true
+	if h.registerShareLocked("shared", changed, now.Add(2*time.Second)) {
+		t.Fatal("reconnect enabled uploads on a read-only share")
+	}
 	reconnected := newControl("a", "laptop")
 	if !h.registerShareLocked("shared", reconnected, now.Add(3*time.Second)) {
 		t.Fatal("original process could not reconnect")

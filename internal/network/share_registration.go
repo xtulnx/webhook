@@ -35,7 +35,8 @@ func (h *Hub) registerShareLocked(node string, control *controlConn, now time.Ti
 		if hmac.Equal(control.shareKey, previous.shareKey) {
 			if !maps.Equal(control.shareIDs, previous.shareIDs) || (control.shareIDs == nil) != (previous.shareIDs == nil) ||
 				!maps.Equal(control.shareNames, previous.shareNames) ||
-				control.shareBasic != previous.shareBasic || !control.shareExpiry.Equal(previous.shareExpiry) ||
+				control.shareBasic != previous.shareBasic || control.shareUpload != previous.shareUpload ||
+				!control.shareExpiry.Equal(previous.shareExpiry) ||
 				!sameShareID(control.shareLinkID, previous.shareLinkID) {
 				return false
 			}
