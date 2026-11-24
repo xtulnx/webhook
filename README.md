@@ -2,7 +2,7 @@
 
 **Webhook 自动化与内网执行服务。**
 
-使用 Go 编写，支持回调认证、参数提取、命令执行、Admin 可视化管理，以及 Hub/Agent 跨内网执行和 HTTP/TCP 转发。适合自动部署、内部运维和多节点自动化。
+使用 Go 编写，支持回调认证、参数提取、命令执行、Admin 可视化管理，以及 Hub/Agent 跨内网执行和 HTTP/TCP/UDP 转发。适合自动部署、内部运维和多节点自动化。
 
 本项目保持 `webhook` 命令和已有配置兼容，使用 [Go Modules](go.mod) 管理依赖，当前版本线为 1.x。从历史 2.x 构建升级时，请先阅读[项目来源与迁移说明](docs/Project-Origin.md)。
 
@@ -70,7 +70,7 @@ curl 'http://127.0.0.1:9000/hooks/hello?env=dev' \
 | 命令控制 | [同步/异步、输出回传、超时、每 Hook 并发](docs/Hook-Definition.md) |
 | 配置管理 | [YAML 总配置、多文件、目录自动发现、热加载、状态](docs/Configuration.md)与[模板](docs/Templates.md) |
 | 管理界面 | [TOTP 登录、JWT 会话、在线 Hook 编辑、认证 API](docs/Admin.md) |
-| 内网执行 | [Hub/Agent、公开 Hook 路由、授权 TCP、级联、临时共享](docs/Network.md) |
+| 内网执行 | [Hub/Agent、公开 Hook 路由、授权 TCP/UDP、级联、临时共享](docs/Network.md) |
 | 运行维护 | [TLS、可信代理、IP 控制、请求限制、日志、systemd、安装和更新回滚](docs/Operations.md) |
 
 ![Admin 管理界面](images/img02.webp)

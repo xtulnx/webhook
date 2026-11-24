@@ -268,7 +268,7 @@ func (h *Hub) openControlPipe(ctx context.Context, targetID, service string, hop
 	if control == nil {
 		control = h.serviceControlLocked(targetID, service)
 	}
-	if h.closed || !h.controlActiveLocked(targetID, control) || !control.services[service] || len(h.sessions) >= h.max {
+	if h.closed || !h.controlActiveLocked(targetID, control) || !control.services[service] || control.udpServices[service] || len(h.sessions) >= h.max {
 		h.mu.Unlock()
 		return nil, errors.New("target unavailable")
 	}

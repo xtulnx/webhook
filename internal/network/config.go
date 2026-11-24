@@ -88,13 +88,15 @@ type AgentConfig struct {
 type Service struct {
 	InProcess bool   `yaml:"-"`
 	Name      string `yaml:"name"`
+	Protocol  string `yaml:"protocol"`
 	Target    string `yaml:"target"`
 	RelayTo   string `yaml:"relay_to"`
 }
 
 type Forward struct {
-	Listen string `yaml:"listen"`
-	To     string `yaml:"to"`
+	Listen   string `yaml:"listen"`
+	To       string `yaml:"to"`
+	Protocol string `yaml:"protocol"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -285,6 +287,12 @@ func validateAgent(cfg *AgentConfig, base string) error {
 		if !validName(service.Name) || services[service.Name] {
 			return fmt.Errorf("invalid or duplicate service %q", service.Name)
 		}
+		if !validForwardProtocol(service.Protocol) {
+			return fmt.Errorf("service %q has invalid protocol %q", service.Name, service.Protocol)
+		}
+		if service.Protocol == "udp" && (service.InProcess || service.Name == "webhook" || service.RelayTo != "") {
+			return fmt.Errorf("UDP service %q requires a direct target", service.Name)
+		}
 		if cfg.WebhookOnlyViaHub && service.Name == "webhook" {
 			return errors.New("webhook_only_via_hub cannot set a webhook service target")
 		}
@@ -312,6 +320,9 @@ func validateAgent(cfg *AgentConfig, base string) error {
 	}
 	forwards := make(map[string]bool)
 	for _, forward := range cfg.Forwards {
+		if !validForwardProtocol(forward.Protocol) {
+			return fmt.Errorf("forward %q has invalid protocol %q", forward.Listen, forward.Protocol)
+		}
 		if err := validateAddress(forward.Listen); err != nil {
 			return fmt.Errorf("forward listen: %w", err)
 		}
@@ -322,12 +333,20 @@ func validateAgent(cfg *AgentConfig, base string) error {
 		if _, _, ok := splitDestination(forward.To); !ok {
 			return fmt.Errorf("invalid forward destination %q", forward.To)
 		}
-		if forwards[forward.Listen] {
+		key := forward.Listen
+		if forward.Protocol == "udp" {
+			key = "udp/" + key
+		}
+		if forwards[key] {
 			return fmt.Errorf("duplicate forward listen %q", forward.Listen)
 		}
-		forwards[forward.Listen] = true
+		forwards[key] = true
 	}
 	return nil
+}
+
+func validForwardProtocol(protocol string) bool {
+	return protocol == "" || protocol == "tcp" || protocol == "udp"
 }
 
 func hubHasService(cfg *HubConfig, id, service string) bool {

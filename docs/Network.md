@@ -6,7 +6,7 @@
 
 初次部署使用 [Hub 总配置](examples/network/hub-integrated.yaml)、[Agent 总配置](examples/network/agent-integrated.yaml)和 [Nginx 子路径配置](examples/network/nginx-subpath.conf)，三者演示 `https://hub.example.com/wh1/` 部署。只需要 webhook 时，无需 `forwards`、SSH 服务或级联。每个 Agent 使用独立令牌；外部调用者仍须通过 hook 自身的签名或其他触发规则认证，Agent 的连接令牌不负责认证外部调用者。Hub 是受信任的流量中转方，能读取请求内容。
 
-通用 TCP 转发与级联作为可选功能保留，适用于已有运维场景。当前不增加 Hub TCP 端口发布、通用 HTTP 正向代理、动态端口分配或正则 rewrite，以控制维护成本。这项功能不创建虚拟网卡或虚拟 IP，也不转发 UDP。
+通用 TCP、UDP 转发与级联作为可选功能提供，适用于已有运维场景。当前不增加 Hub TCP 端口发布、通用 HTTP 正向代理、动态端口分配或正则 rewrite，以控制维护成本。这项功能不创建虚拟网卡或虚拟 IP。
 
 ## 统一配置
 
@@ -132,6 +132,32 @@ Hub 会先删除请求里已有的 `X-Webhook-Network-Client-IP`，再写入自�
 
 转发时会保留 HTTP 方法、业务请求头、`Host`、查询参数及请求体；公开路径会转换成 Agent 的本地 hook 路径。Hub 会覆盖 `X-Forwarded-For`、`X-Real-IP`、`X-Forwarded-Proto`、`X-Forwarded-Host`，并写入 `X-Webhook-Network-Original-URI` 记录公开路径及查询参数；客户端伪造的同名信息不会透传。`Forwarded` 和部分其它可能冒充代理的头会被删除。响应状态、业务头、压缩编码、主体及 trailer 会正常转回。HTTP 请求会在每跳重新编码，因此原始 TCP 地址、TLS 连接对象、报文分块方式和原始公开路径不会自动成为下级 `RawRequest` 的值；依赖完整原始 HTTP 字节签名的业务需要自行使用专门的端到端方案。
 
+## 可选：UDP 转发
+
+例如让运维机通过 Hub 访问内网 DNS。Hub 保持现有 WSS 入口，在源节点 `nodes[].allow` 加入 `edge/dns`，在目标节点 `edge` 的 `nodes[].services` 加入 `dns`。Hub 和两端 Agent 都需要包含 UDP 支持的版本。
+
+在入口 Agent 的 `agent` 配置下添加：
+
+```yaml
+forwards:
+  - protocol: udp
+    listen: 127.0.0.1:15353
+    to: edge/dns
+```
+
+在目标 Agent 的 `agent` 配置下添加：
+
+```yaml
+services:
+  - name: dns
+    protocol: udp
+    target: 127.0.0.1:53
+```
+
+可用 `dig @127.0.0.1 -p 15353 example.org` 验证。两端省略 `protocol` 时默认使用 TCP。UDP 支持配置文件中的直连目标；临时 Agent 的 `--forward`、`--publish`、`connect` 和级联 `relay_to` 继续用于 TCP。
+
+同一监听端口按客户端 IP 和端口复用会话。会话占用现有 Agent `max_connections` 和 Hub `max_sessions` 名额，空闲 30 秒后回收。每个入口会话最多排队 8 个数据报，上限为每包 8 KiB。超出容量的包会丢弃。数据报经 WebSocket 中转，链路丢包触发 TCP 重传时，同一会话的后续包可能延迟。
+
 ## 级联
 
 [上级 Hub](examples/network/cascade-parent.yaml)、[中间节点](examples/network/cascade-middle.yaml)和[下级 Agent](examples/network/cascade-child.yaml)组成完整级联示例。中间节点使用 `mode: both`：它为 `child` 提供下级 Hub，同时以 `middle` 身份连到上级 Hub。下级 Agent 必须能访问中间节点的 Hub 地址（同一局域网或可达的公网地址）。`relay_to: child/webhook` 将下级服务作为上级 Agent 的服务发布；下级 hook 清单会随连接与热重载变化转报给上级。上级 Hub 仍由自己的 `hook_routes` 分配公开路径。普通 TCP 服务也可用同样方式级联。最多转发 4 跳，以限制错误配置形成环路。每一跳都经过对应 Hub，链路上的节点权限与令牌需要分别配置；上级 Hub 看到的是中间节点身份。
@@ -140,7 +166,7 @@ Hub 会先删除请求里已有的 `X-Webhook-Network-Client-IP`，再写入自�
 
 保留服务名 `webhook` 只能通过 Hub 的 hook 路由或受信任的 Hub 级联进入，不能写入其他节点的 `allow`。否则其他 Agent 可通过原始 TCP 请求绕过路由规则并伪造内部来源头，启动时会拒绝此配置。可选 TCP 示例使用服务名 `http`；它不应指向信任内部来源头的 webhook 监听器，也不能通过别名重新发布受保护的 webhook。
 
-Hub 的 `nodes[].services` 声明该节点允许发布的服务名，`nodes[].allow` 是该节点允许访问的 `节点/服务` 列表。Agent 的 `services[].target` 指向本机或可信内网中的实际 TCP 服务，`forwards[].listen` 是本机入口，`forwards[].to` 是目标。Hub 同时限制活跃会话数，默认 `max_sessions: 128`；每个 Agent 默认 `max_connections: 64`。两者均可按容量调整。
+Hub 的 `nodes[].services` 声明该节点允许发布的服务名，`nodes[].allow` 是该节点允许访问的 `节点/服务` 列表。Agent 的 `services[].target` 指向本机或可信内网中的实际 TCP 或 UDP 服务，`forwards[].listen` 是本机入口，`forwards[].to` 是目标。Hub 同时限制活跃会话数，默认 `max_sessions: 128`；每个 Agent 默认 `max_connections: 64`。两者均可按容量调整。
 
 Agent 的转发监听地址默认必须是 loopback。只有明确需要让其他设备访问该转发端口时，才设置 `allow_public_listen: true` 并在 Agent 所在机器上配置防火墙。Hub 会按节点令牌和访问列表校验每条连接。令牌至少 32 个字符，更换令牌后重启对应节点与 Hub。
 

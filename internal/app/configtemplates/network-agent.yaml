@@ -11,12 +11,14 @@ agent:
   webhook_only_via_hub: true # Hook 只通过 Hub 进入，不开放本地 HTTP/业务 socket。
   max_connections: 64
   allow_public_listen: false
-  # services:  # 普通 TCP 服务；Hub nodes[].services 必须授权相同名称。
+  # services:  # 普通 TCP/UDP 服务；Hub nodes[].services 必须授权相同名称。
   #   - name: ssh
   #     target: 127.0.0.1:22
+  #     protocol: tcp # 默认 tcp，直连 UDP 服务填 udp。
   # forwards:  # 本地连接入口，目标需要 Hub allow 授权。
   #   - listen: 127.0.0.1:2222
   #     to: other/ssh
+  #     protocol: tcp # UDP 转发时填 udp，与目标服务协议一致。
 # 纯 TCP Agent：把 with_webhook 和 webhook_only_via_hub 都改为 false。
 # 不要通过普通服务别名发布信任内部来源头的 webhook 监听器。
 # Hook 清单异步上报 Hub；本地加载回执不承诺上游立即同步。

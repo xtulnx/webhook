@@ -37,6 +37,7 @@ type controlMessage struct {
 	Info        *AgentInfo `json:"info,omitempty"`
 	Type        string     `json:"type"`
 	Services    []string   `json:"services,omitempty"`
+	UDPServices []string   `json:"udp_services,omitempty"`
 	Hooks       []HookInfo `json:"hooks,omitempty"`
 	Session     string     `json:"session,omitempty"`
 	Service     string     `json:"service,omitempty"`
@@ -61,6 +62,7 @@ type HookInfo struct {
 type controlConn struct {
 	conn        *websocket.Conn
 	services    map[string]bool
+	udpServices map[string]bool
 	hooks       map[string]HookInfo
 	shareKey    []byte
 	shareBasic  bool
@@ -219,7 +221,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleControl(w, r, node, proof)
 	case h.dataPath:
 		switch r.Header.Get(roleHeader) {
-		case "source":
+		case "source", udpSourceRole:
 			h.handleSource(w, r, node, proof)
 		case "target":
 			h.handleTarget(w, r, node, proof)
@@ -272,6 +274,13 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 		}
 		services[service] = true
 	}
+	udpServices := make(map[string]bool)
+	for _, service := range register.UDPServices {
+		if !services[service] || service == "webhook" || udpServices[service] {
+			return
+		}
+		udpServices[service] = true
+	}
 	hooks, valid := validateInventory(register.Hooks)
 	if !valid {
 		return
@@ -286,7 +295,7 @@ func (h *Hub) handleControl(w http.ResponseWriter, r *http.Request, id string, p
 			info.Version = "unknown"
 		}
 	}
-	control := &controlConn{conn: conn, services: services, hooks: hooks}
+	control := &controlConn{conn: conn, services: services, udpServices: udpServices, hooks: hooks}
 	if register.ShareKey != "" || register.ShareLinkID != nil || len(register.ShareNames) != 0 {
 		key, err := base64.RawURLEncoding.DecodeString(register.ShareKey)
 		if err != nil || len(key) != sha256.Size || !h.nodes[id].AllowShareLinks || !services["files"] ||
@@ -412,7 +421,8 @@ func (h *Hub) handleSource(w http.ResponseWriter, r *http.Request, id string, pr
 	}
 	h.mu.Lock()
 	control := h.serviceControlLocked(targetID, service)
-	available := !h.closed && control != nil && control.services[service]
+	udp := r.Header.Get(roleHeader) == udpSourceRole
+	available := !h.closed && control != nil && control.services[service] && control.udpServices[service] == udp
 	full := len(h.sessions) >= h.max
 	h.mu.Unlock()
 	if !available {
@@ -449,7 +459,11 @@ func (h *Hub) handleSource(w http.ResponseWriter, r *http.Request, id string, pr
 		}
 		h.mu.Unlock()
 	}()
-	if err := control.write(controlMessage{Type: "open", Session: sessionID, Service: service, Hops: maxHops}); err != nil {
+	openType := "open"
+	if udp {
+		openType = "open_udp"
+	}
+	if err := control.write(controlMessage{Type: openType, Session: sessionID, Service: service, Hops: maxHops}); err != nil {
 		return
 	}
 	var target *websocket.Conn

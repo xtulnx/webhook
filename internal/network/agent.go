@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net"
@@ -110,35 +111,44 @@ func RunAgent(ctx context.Context, cfg *AgentConfig, options ...AgentOptions) er
 			a.hooks = func() []HookInfo { return a.downstream.HooksForNode(id) }
 		}
 	}
-	listeners := make([]net.Listener, 0, len(cfg.Forwards))
-	for _, forward := range cfg.Forwards {
-		listener, err := net.Listen("tcp", forward.Listen)
-		if err != nil {
-			for _, opened := range listeners {
-				_ = opened.Close()
-			}
-			return fmt.Errorf("listen on %s: %w", forward.Listen, err)
-		}
-		listeners = append(listeners, listener)
-	}
+	ctx, cancel := context.WithCancel(ctx)
+	var listeners []io.Closer
+	var serveForwards []func()
 	defer func() {
+		cancel()
 		for _, listener := range listeners {
 			_ = listener.Close()
 		}
 		a.wg.Wait()
 	}()
-	for i, listener := range listeners {
-		forward := cfg.Forwards[i]
-		a.wg.Add(1)
-		go a.accept(ctx, listener, forward)
-		log.Printf("network forward %s -> %s", listener.Addr(), forward.To)
-	}
-	go func() {
-		<-ctx.Done()
-		for _, listener := range listeners {
-			_ = listener.Close()
+	for _, forward := range cfg.Forwards {
+		forward := forward
+		if forward.Protocol == "udp" {
+			packet, err := net.ListenPacket("udp", forward.Listen)
+			if err != nil {
+				return fmt.Errorf("listen on UDP %s: %w", forward.Listen, err)
+			}
+			listeners = append(listeners, packet)
+			serveForwards = append(serveForwards, func() {
+				log.Printf("network UDP forward %s -> %s", packet.LocalAddr(), forward.To)
+				a.receiveUDP(ctx, packet.(*net.UDPConn), forward.To)
+			})
+			continue
 		}
-	}()
+		listener, err := net.Listen("tcp", forward.Listen)
+		if err != nil {
+			return fmt.Errorf("listen on %s: %w", forward.Listen, err)
+		}
+		listeners = append(listeners, listener)
+		serveForwards = append(serveForwards, func() {
+			log.Printf("network forward %s -> %s", listener.Addr(), forward.To)
+			a.accept(ctx, listener, forward)
+		})
+	}
+	for _, serve := range serveForwards {
+		a.wg.Add(1)
+		go serve()
+	}
 	backoff := time.Second
 	for ctx.Err() == nil {
 		connectedAt := time.Now()
@@ -254,15 +264,19 @@ func (a *Agent) control(ctx context.Context) error {
 		}
 	}()
 	services := make([]string, 0, len(a.cfg.Services))
+	var udpServices []string
 	for _, service := range a.cfg.Services {
 		services = append(services, service.Name)
+		if service.Protocol == "udp" {
+			udpServices = append(udpServices, service.Name)
+		}
 	}
 	var inventory []HookInfo
 	if a.hooks != nil {
 		inventory = a.hooks()
 	}
 	if err := conn.WriteJSON(controlMessage{
-		Info: &a.info, Type: "register", Services: services, Hooks: inventory,
+		Info: &a.info, Type: "register", Services: services, UDPServices: udpServices, Hooks: inventory,
 		ShareKey:    base64.RawURLEncoding.EncodeToString(a.shareKey),
 		ShareBasic:  a.shareBasic,
 		ShareLinkID: a.shareLinkID,
@@ -327,11 +341,11 @@ func (a *Agent) control(ctx context.Context) error {
 			return err
 		}
 		var message controlMessage
-		if err := json.Unmarshal(data, &message); err != nil || message.Type != "open" || message.Session == "" || !validName(message.Service) {
+		if err := json.Unmarshal(data, &message); err != nil || (message.Type != "open" && message.Type != "open_udp") || message.Session == "" || !validName(message.Service) {
 			return errors.New("invalid control message")
 		}
 		target, exists := a.services[message.Service]
-		if !exists {
+		if !exists || (target.Protocol == "udp") != (message.Type == "open_udp") {
 			continue
 		}
 		if !a.acquire() {
@@ -391,7 +405,9 @@ func (a *Agent) handleTarget(ctx context.Context, session string, service Servic
 	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	var conn net.Conn
 	var err error
-	if service.RelayTo != "" {
+	if service.Protocol == "udp" {
+		conn, err = (&net.Dialer{}).DialContext(dialCtx, "udp", service.Target)
+	} else if service.RelayTo != "" {
 		if a.downstream == nil || hops <= 1 {
 			cancel()
 			return
@@ -414,6 +430,10 @@ func (a *Agent) handleTarget(ctx context.Context, session string, service Servic
 	ws, err := a.openWebSocket(ctx, transportPath(a.cfg.TransportPrefix, "/data"), "target", "", session)
 	if err != nil {
 		log.Printf("network target tunnel failed: %v", err)
+		return
+	}
+	if service.Protocol == "udp" {
+		bridgeUDP(ctx, conn, ws)
 		return
 	}
 	a.bridge(ctx, conn, ws)
